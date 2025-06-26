@@ -1,0 +1,6 @@
+<svg width="320" height="240" viewBox="0 0 320 240" xmlns="http://www.w3.org/2000/svg">
+    <rect width="320" height="240" fill="#E5E7EB"/>
+    <circle cx="160" cy="120" r="40" fill="#9CA3AF"/>
+    <path d="M145 100L185 120L145 140V100Z" fill="white"/>
+    <text x="160" y="180" text-anchor="middle" fill="#6B7280" font-family="Arial, sans-serif" font-size="14">Video Thumbnail</text>
+  </svg>
