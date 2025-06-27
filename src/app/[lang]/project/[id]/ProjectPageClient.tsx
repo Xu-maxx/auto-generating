@@ -14,6 +14,7 @@ import {
   findClosestAspectRatio,
   getBestResolution
 } from '@/utils/imageRatioUtils';
+import { extractVideoFrame } from '@/utils/videoFrameExtractor';
 
 interface ProjectPageClientProps {
   params: Promise<{ lang: string; id: string }>;
@@ -42,9 +43,7 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
   const currentVideoTasksRef = useRef<VideoGenerationTask[]>([]);
   
   // Global state for parallel processing control
-  const [activeSubmissions, setActiveSubmissions] = useState(0);
   const [isApiChannelOccupied, setIsApiChannelOccupied] = useState(false);
-  const maxConcurrentTasks = 2;
 
   // Get locale and projectId from params
   useEffect(() => {
@@ -103,6 +102,17 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
   // Update ref whenever videoTasks change
   currentVideoTasksRef.current = videoTasks;
 
+  // Sync session name with folder name when session loads
+  useEffect(() => {
+    if (currentSession && folderName) {
+      const expectedSessionName = folderName.trim() || 'untitled';
+      if (currentSession.name !== expectedSessionName) {
+        console.log(`🏷️ Syncing session name: "${currentSession.name}" → "${expectedSessionName}"`);
+        updateSession({ name: expectedSessionName });
+      }
+    }
+  }, [currentSession?.id, folderName, updateSession]);
+
   // Debug: Monitor videoTasks changes
   useEffect(() => {
     console.log('🎬 VIDEO TASKS CHANGED:', {
@@ -130,7 +140,12 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
   };
 
   const setFolderName = (name: string) => {
-    updateSession({ folderName: name });
+    // Update both folder name and session name to keep them in sync
+    const sessionName = name.trim() || 'untitled';
+    updateSession({ 
+      folderName: name,
+      name: sessionName
+    });
   };
 
   const setAspectRatio = (ratio: string) => {
@@ -345,17 +360,13 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
         currentVideoTasksRef.current = result.tasks; // Update ref immediately
         console.log('🚨 AFTER updateSession call - This should trigger session update');
         
-        // Set API channel as occupied and track active submissions
-        const submittedTasks = result.tasks.filter((t: VideoGenerationTask) => t.status === 'submitted');
-        setActiveSubmissions(submittedTasks.length);
+        // Set API channel as occupied - all tasks are processed simultaneously
         setIsApiChannelOccupied(true);
         
-        console.log('🔄 Parallel processing state:', {
+        console.log('🔄 All-at-once processing state:', {
           totalTasks: result.tasks.length,
-          submittedTasks: submittedTasks.length,
-          queuedTasks: result.tasks.filter((t: VideoGenerationTask) => t.status === 'queued').length,
-          activeSubmissions: submittedTasks.length,
-          apiChannelOccupied: true
+          submittedTasks: result.tasks.filter((t: VideoGenerationTask) => t.status === 'submitted').length,
+          failedTasks: result.tasks.filter((t: VideoGenerationTask) => t.status === 'failed').length
         });
         
         const successfulTasks = result.tasks.filter((t: VideoGenerationTask) => t.status === 'submitted');
@@ -393,37 +404,30 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
   const handleTaskCompletion = (taskId: string, reason: string) => {
     console.log(`🏁 Task ${taskId} completed: ${reason}`);
     
-    // Decrement active submissions count
-    setActiveSubmissions(prev => {
-      const newCount = Math.max(0, prev - 1);
-      console.log(`📉 Active submissions: ${prev} → ${newCount}`);
-      
-      // Check if API channel should be freed
-      const currentTasks = currentVideoTasksRef.current;
-      const hasQueuedTasks = currentTasks.some(task => task.status === 'queued');
-      const hasActiveProcessing = currentTasks.some(task => 
-        task.status === 'submitted' || task.status === 'processing'
-      );
-      
-      console.log(`🔍 API Channel Status Check:`, {
-        hasQueuedTasks,
-        hasActiveProcessing,
-        newActiveCount: newCount,
-        currentTasks: currentTasks.map(t => ({ name: t.imageName, status: t.status })),
-        shouldFreeChannel: !hasQueuedTasks && newCount === 0
-      });
-      
-      // Free API channel if no more queued tasks and this was the last active task
-      if (!hasQueuedTasks && newCount === 0) {
-        console.log('🔓 Freeing API channel - all tasks completed');
-        setIsApiChannelOccupied(false);
-      }
-      
-      return newCount;
+    // Clean up polling for this completed task
+    setPollingTasks(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(taskId);
+      return newSet;
     });
     
-    // Try to process next queued image
-    setTimeout(() => processNextQueuedImage(), 1000);
+    // Check if all tasks are completed to free up the API channel
+    const currentTasks = currentVideoTasksRef.current;
+    const hasActiveProcessing = currentTasks.some(task => 
+      task.status === 'submitted' || task.status === 'processing' || task.status === 'downloading'
+    );
+    
+    console.log(`🔍 API Channel Status Check:`, {
+      hasActiveProcessing,
+      currentTasks: currentTasks.map(t => ({ name: t.imageName, status: t.status })),
+      shouldFreeChannel: !hasActiveProcessing
+    });
+    
+    // Free API channel if no more active tasks
+    if (!hasActiveProcessing) {
+      console.log('🔓 Freeing API channel - all tasks completed');
+      setIsApiChannelOccupied(false);
+    }
   };
 
   const pollTaskStatus = async (taskId: string, imageIndex: number) => {
@@ -473,9 +477,23 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
             ));
 
             try {
+              // Extract video frame client-side before downloading
+              console.log(`Extracting video frame for task ${taskId}...`);
+              const frameExtractionResult = await extractVideoFrame(taskResult.video_url, 0.1, 0.8);
+              
               // Find the original image name for this task using session state
               const currentTask = (currentSession?.videoTasks || []).find(t => t.taskId === taskId);
               const originalImageName = currentTask?.imageName || `video_${imageIndex}`;
+              
+              // Find the original image URL from addedImages based on filename
+              const originalImage = addedImages.find(img => img.filename === originalImageName);
+              const originalImageUrl = originalImage?.url || null;
+              
+              console.log(`🖼️ Original image lookup for task ${taskId}:`, {
+                originalImageName,
+                foundOriginalImage: !!originalImage,
+                originalImageUrl: originalImageUrl ? originalImageUrl.substring(0, 50) + '...' : 'null'
+              });
 
               const downloadResponse = await fetch('/api/download-video', {
                 method: 'POST',
@@ -487,7 +505,8 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                   folderName: folderName,
                   originalFilename: originalImageName,
                   taskId: taskId,
-                  extractPreview: true // Request preview extraction
+                  previewDataUrl: frameExtractionResult.success ? frameExtractionResult.dataUrl : null,
+                  originalImageUrl: originalImageUrl // Include original image URL as fallback
                 }),
               });
 
@@ -626,109 +645,9 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
   };
 
   const processNextQueuedImage = async () => {
-    console.log('🔄 processNextQueuedImage called');
-    console.log(`🔍 Current state: activeSubmissions=${activeSubmissions}, maxConcurrent=${maxConcurrentTasks}, canSubmit=${activeSubmissions < maxConcurrentTasks}`);
-    
-    // Check if we can submit more tasks (max 2 concurrent)
-    if (activeSubmissions >= maxConcurrentTasks) {
-      console.log(`⏸️ Max concurrent tasks (${maxConcurrentTasks}) reached, waiting...`);
-      return;
-    }
-    
-    // Find the next queued image from current ref (not stale state)
-    const currentTasks = currentVideoTasksRef.current;
-    const nextQueuedTask = currentTasks.find(task => task.status === 'queued');
-    
-    console.log('🔍 Looking for queued tasks:', {
-      totalTasks: currentTasks.length,
-      taskStatuses: currentTasks.map(t => ({ imageName: t.imageName, status: t.status })),
-      foundQueuedTask: !!nextQueuedTask,
-      queuedTaskName: nextQueuedTask?.imageName,
-      activeSubmissions: activeSubmissions,
-      maxConcurrent: maxConcurrentTasks
-    });
-    
-    if (!nextQueuedTask) {
-      console.log('No more queued images to process');
-      return;
-    }
-
-    console.log(`🚀 Processing next queued image: ${nextQueuedTask.imageName}`);
-
-    // Update status to submitted (processing) immediately
-    updateVideoTasks(prev => prev.map(task => 
-      task.imageIndex === nextQueuedTask.imageIndex ? {
-        ...task,
-        status: 'submitted' as const
-      } : task
-    ));
-
-    // Process the next image asynchronously
-    try {
-      const response = await fetch('/api/jimeng-video-next', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          imageIndex: nextQueuedTask.imageIndex,
-          imageName: nextQueuedTask.imageName,
-          imageUrl: nextQueuedTask.imageUrl || '',
-          prompt: nextQueuedTask.prompt || videoPrompt,
-          aspectRatio: aspectRatio,
-          seed: -1
-        }),
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        console.log(`Successfully submitted next task: ${result.taskId}`);
-        
-        // Increment active submissions count
-        setActiveSubmissions(prev => prev + 1);
-        
-        // Update task with new task ID
-        updateVideoTasks(prev => prev.map(task => 
-          task.imageIndex === nextQueuedTask.imageIndex ? {
-            ...task,
-            taskId: result.taskId,
-            status: 'submitted'
-          } : task
-        ));
-
-        // Start polling for this new task
-        pollTaskStatus(result.taskId, nextQueuedTask.imageIndex);
-      } else {
-        console.error(`Failed to submit next task:`, result.error);
-        
-        // Update task as failed
-        updateVideoTasks(prev => prev.map(task => 
-          task.imageIndex === nextQueuedTask.imageIndex ? {
-            ...task,
-            status: 'failed',
-            error: result.error
-          } : task
-        ));
-
-        // Try to process the next one after this failure
-        setTimeout(() => processNextQueuedImage(), 2000);
-      }
-    } catch (error) {
-      console.error('Error processing next queued image:', error);
-      
-      // Update task as failed
-      updateVideoTasks(prev => prev.map(task => 
-        task.imageIndex === nextQueuedTask.imageIndex ? {
-          ...task,
-          status: 'failed',
-          error: error instanceof Error ? error.message : 'Unknown error'
-        } : task
-      ));
-
-      // Try to process the next one after this failure
-      setTimeout(() => processNextQueuedImage(), 2000);
-    }
+    // This function is no longer needed since we process all images simultaneously
+    console.log('🔄 processNextQueuedImage called - but queuing is disabled, all images are processed at once');
+    return;
   };
 
   // Helper function to update video tasks
@@ -782,21 +701,18 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
 
   const extractVideoPreview = async (videoUrl: string, taskId: string): Promise<string | null> => {
     try {
-      const response = await fetch('/api/extract-video-frame', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ videoUrl, taskId }),
-      });
+      console.log(`🎬 Extracting video preview for task ${taskId}...`);
+      const result = await extractVideoFrame(videoUrl, 0.1, 0.8);
       
-      const result = await response.json();
-      if (result.success) {
-        return result.previewUrl;
+      if (result.success && result.dataUrl) {
+        console.log(`✅ Video preview extracted successfully for task ${taskId}`);
+        return result.dataUrl;
       } else {
-        console.error('Failed to extract video preview:', result.error);
+        console.error(`❌ Failed to extract video preview for task ${taskId}:`, result.error);
         return null;
       }
     } catch (error) {
-      console.error('Error extracting video preview:', error);
+      console.error(`❌ Error extracting video preview for task ${taskId}:`, error);
       return null;
     }
   };
@@ -1282,6 +1198,9 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                         className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         maxLength={50}
                       />
+                      <p className="text-xs text-gray-500 mt-1">
+                        💡 {dict.projectPage.videoGeneration.folderNameTip}
+                      </p>
                     </div>
 
                     {/* Auto-detected Aspect Ratio Display (Read-only) */}
@@ -1316,7 +1235,7 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                       className="w-full px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm font-medium mb-3"
                     >
                       {isApiChannelOccupied ? 
-                        dict.projectPage.videoGeneration.processing.replace('{active}', activeSubmissions.toString()).replace('{max}', maxConcurrentTasks.toString()) :
+                        'Processing Videos...' :
                         isGeneratingVideo ? 
                         dict.projectPage.videoGeneration.settingUp.replace('{count}', addedImages.length.toString()) : 
                         dict.projectPage.videoGeneration.generateButton.replace('{count}', addedImages.length.toString()).replace('{plural}', addedImages.length > 1 ? 's' : '')
@@ -1451,6 +1370,22 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                             .map((video, index) => {
                               const isSelected = selectedVideos.has(video.taskId || '');
                               
+                              // Determine preview type based on URL patterns
+                              const isVideoPreview = video.previewUrl === `/${video.relativePath}`;
+                              const originalImage = addedImages.find(img => img.filename === video.imageName);
+                              const isOriginalImagePreview = video.previewUrl === originalImage?.url;
+                              const isExtractedFrame = !isVideoPreview && !isOriginalImagePreview;
+                              
+                              console.log(`🖼️ Video preview debug for ${video.imageName}:`, {
+                                taskId: video.taskId,
+                                previewUrl: video.previewUrl,
+                                relativePath: video.relativePath,
+                                imageUrl: video.imageUrl,
+                                isVideoPreview,
+                                isOriginalImagePreview,
+                                originalImageUrl: originalImage?.url
+                              });
+                              
                               return (
                                 <div key={video.taskId || index} className="relative group">
                                   <div 
@@ -1460,11 +1395,30 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                                     onClick={() => handleVideoClick(video)}
                                     onDoubleClick={() => handleVideoDoubleClick(video)}
                                   >
-                                    <img
-                                      src={video.previewUrl}
-                                      alt={`Video preview ${index + 1}`}
-                                      className="w-full h-full object-cover hover:scale-105 transition-transform duration-200"
-                                    />
+                                    {isVideoPreview ? (
+                                      // Use video element as preview (muted, first frame)
+                                      <video
+                                        src={video.previewUrl}
+                                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-200"
+                                        muted
+                                        preload="metadata"
+                                        onError={() => console.error('Video preview failed to load:', video.previewUrl)}
+                                      />
+                                    ) : (
+                                      // Use image as preview (either extracted frame or original image)
+                                      <img
+                                        src={video.previewUrl}
+                                        alt={`Video preview ${index + 1}`}
+                                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-200"
+                                        onError={(e) => {
+                                          console.error('Image preview failed to load:', video.previewUrl);
+                                          console.log('Trying original image as fallback...');
+                                          if (originalImage?.url && video.previewUrl !== originalImage.url) {
+                                            (e.target as HTMLImageElement).src = originalImage.url;
+                                          }
+                                        }}
+                                      />
+                                    )}
                                     
                                     {/* Video Play Icon Overlay */}
                                     <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-20 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
@@ -1474,6 +1428,13 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                                         </svg>
                                       </div>
                                     </div>
+                                    
+                                    {/* Preview type indicator */}
+                                    {(isVideoPreview || isOriginalImagePreview) && (
+                                      <div className="absolute bottom-1 left-1 px-1 py-0.5 bg-black bg-opacity-50 rounded text-xs text-white">
+                                        {isVideoPreview ? 'Video' : 'Original'}
+                                      </div>
+                                    )}
                                     
                                     {/* Selection indicator */}
                                     {isSelected && (
@@ -1506,6 +1467,8 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
 
                         <div className="text-xs text-gray-500 mt-3">
                           💡 Single click to select, double click to view full video, hover to see delete button (🗑️)
+                          <br />
+                          🖼️ Preview shows: extracted frame (best) → original image (fallback) → video frame (last resort)
                         </div>
                       </div>
                     )}
@@ -1521,11 +1484,6 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                             <div className="flex items-center space-x-3">
                               {/* Status Icon */}
                               <div className="flex-shrink-0">
-                                {task.status === 'queued' && (
-                                  <div className="w-4 h-4 rounded-full bg-gray-400 flex items-center justify-center">
-                                    <div className="w-2 h-2 rounded-full bg-white"></div>
-                                  </div>
-                                )}
                                 {task.status === 'submitted' && (
                                   <div className="w-4 h-4 rounded-full bg-blue-500 animate-pulse flex items-center justify-center">
                                     <div className="w-2 h-2 rounded-full bg-white"></div>
@@ -1563,7 +1521,6 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                                   {task.imageName}
                                 </p>
                                 <p className="text-xs text-gray-500 capitalize">
-                                  {task.status === 'queued' && 'Waiting in queue'}
                                   {task.status === 'submitted' && 'Submitted to API'}
                                   {task.status === 'processing' && 'Generating video...'}
                                   {task.status === 'completed' && 'Video ready'}
@@ -1617,15 +1574,7 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                           <span>
                             Progress: {videoTasks.filter(t => t.status === 'downloaded').length} / {videoTasks.length} completed
                           </span>
-                          <span>
-                            Active: {videoTasks.filter(t => t.status === 'submitted' || t.status === 'processing').length} / {maxConcurrentTasks}
-                          </span>
                         </div>
-                        {videoTasks.filter(t => t.status === 'queued').length > 0 && (
-                          <div className="mt-1 text-blue-600">
-                            {videoTasks.filter(t => t.status === 'queued').length} tasks waiting in queue
-                          </div>
-                        )}
                       </div>
                     </div>
                   </div>

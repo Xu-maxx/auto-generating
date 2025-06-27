@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Signer } from '@volcengine/openapi';
 import OSS from 'ali-oss';
 import fs from 'fs';
 import path from 'path';
@@ -19,10 +18,23 @@ const generateUUID = () => {
   }
 };
 
-// JIMeng API configuration
-const JIMENG_ENDPOINT = 'visual.volcengineapi.com';
-const REGION = 'cn-north-1';
-const SERVICE = 'cv';
+// VolcEngine ARK API configuration
+const ARK_BASE_URL = 'https://ark.cn-beijing.volces.com/api/v3';
+
+// Type definitions for VolcEngine content generation
+interface ContentTextItem {
+  type: "text";
+  text: string;
+}
+
+interface ContentImageItem {
+  type: "image_url";
+  image_url: {
+    url: string;
+  };
+}
+
+type ContentItem = ContentTextItem | ContentImageItem;
 
 // Initialize OSS client
 const getOSSClient = () => {
@@ -68,7 +80,7 @@ const uploadImageToOSS = async (localImageUrl: string, filename: string): Promis
     
     const imageBuffer = fs.readFileSync(imagePath);
     const fileExtension = filename.split('.').pop() || 'jpg';
-    const uniqueFilename = `jimeng-images/${generateUUID()}-${Date.now()}.${fileExtension}`;
+    const uniqueFilename = `volcengine-images/${generateUUID()}-${Date.now()}.${fileExtension}`;
     
     console.log('Uploading local image to OSS:', {
       localPath: imagePath,
@@ -99,7 +111,7 @@ const uploadImageToOSS = async (localImageUrl: string, filename: string): Promis
   }
 };
 
-interface JIMengRequest {
+interface VolcEngineVideoRequest {
   prompt: string;
   images: Array<{
     url: string;
@@ -108,19 +120,19 @@ interface JIMengRequest {
   folderName: string;
   aspectRatio?: string;
   seed?: number;
+  duration?: number;
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const body: JIMengRequest = await request.json();
-    const { prompt, images, folderName, aspectRatio = '16:9', seed = -1 } = body;
+    const body: VolcEngineVideoRequest = await request.json();
+    const { prompt, images, folderName, aspectRatio = '16:9', seed = -1, duration = 5 } = body;
 
-    const accessKeyIdRaw = process.env.JiMeng_AccessKeyId;
-    const secretAccessKeyRaw = process.env.JiMeng_SecretAccessKey;
+    const volcEngineApiKey = process.env.VOLCENGINE_API_KEY;
 
-    if (!accessKeyIdRaw || !secretAccessKeyRaw) {
+    if (!volcEngineApiKey) {
       return NextResponse.json(
-        { error: 'JIMeng API credentials not found' },
+        { error: 'VolcEngine API key not found' },
         { status: 500 }
       );
     }
@@ -136,205 +148,187 @@ export async function POST(request: NextRequest) {
       bucket: process.env.OSS_BUCKET_NAME || 'not configured'
     });
 
-    // AccessKeyId should be used as-is, but SecretAccessKey might need base64 decoding
-    const accessKeyId = accessKeyIdRaw;
-    let secretAccessKey = secretAccessKeyRaw;
-    
-    // Try to decode SecretAccessKey if it looks like base64
-    try {
-      const decodedSecret = Buffer.from(secretAccessKeyRaw, 'base64').toString('utf-8');
-      // Check if decoded secret looks valid (no invalid Unicode characters)
-      if (decodedSecret && decodedSecret.length > 0 && !decodedSecret.includes('')) {
-        secretAccessKey = decodedSecret;
-        console.log('Using base64 decoded SecretAccessKey');
-      } else {
-        console.log('Base64 decoded SecretAccessKey contains invalid characters, using raw');
-      }
-    } catch (error) {
-      console.log('SecretAccessKey base64 decoding failed, using raw:', error);
-    }
-    
-    console.log('Using AccessKeyId:', accessKeyId);
-    console.log('SecretAccessKey length:', secretAccessKey.length);
-
     const tasks = [];
     
-    console.log(`Setting up ${images.length} images for parallel processing (max 2 concurrent)...`);
+    console.log(`Processing all ${images.length} images simultaneously...`);
     
-    const maxInitialSubmissions = Math.min(2, images.length); // Submit up to 2 images initially
-    
-    // Initialize all tasks - first 2 will be submitted, others are queued
+    // Process all images simultaneously
     for (let i = 0; i < images.length; i++) {
       const image = images[i];
       
-      if (i < maxInitialSubmissions) {
-        // Process the first 2 images immediately
-        console.log(`\n=== Processing image ${i + 1}: ${image.filename} ===`);
-        console.log('📊 Image details:', {
-          filename: image.filename,
+      console.log(`\n=== Processing image ${i + 1}: ${image.filename} ===`);
+      console.log('📊 Image details:', {
+        filename: image.filename,
+        originalUrl: image.url,
+        isLocalPath: image.url.startsWith('/'),
+        includesLocalhost: image.url.includes('localhost'),
+        startsWithHttp: image.url.startsWith('http'),
+        urlLength: image.url.length
+      });
+      
+      let imageUrl = image.url;
+      
+      // Check if image URL is local and needs to be uploaded to OSS
+      if (image.url.startsWith('/') || image.url.includes('localhost')) {
+        console.log('🔍 Local image detected, uploading to OSS:', {
           originalUrl: image.url,
-          isLocalPath: image.url.startsWith('/'),
-          includesLocalhost: image.url.includes('localhost'),
-          startsWithHttp: image.url.startsWith('http'),
-          urlLength: image.url.length
+          filename: image.filename,
+          ossConfigured: ossConfigured
         });
         
-        let imageUrl = image.url;
-        
-        // Check if image URL is local and needs to be uploaded to OSS
-        if (image.url.startsWith('/') || image.url.includes('localhost')) {
-          console.log('🔍 Local image detected, uploading to OSS:', {
-            originalUrl: image.url,
-            filename: image.filename,
-            ossConfigured: ossConfigured
-          });
-          
-          if (!ossConfigured) {
-            console.error('❌ OSS not configured but local image detected');
-            tasks.push({
-              taskId: null,
-              imageIndex: i,
-              imageName: image.filename,
-              status: 'failed',
-              error: 'OSS not configured for local image upload'
-            });
-            continue;
-          }
-          
-          try {
-            const originalImageUrl = imageUrl;
-            imageUrl = await uploadImageToOSS(image.url, image.filename);
-            console.log('✅ Successfully uploaded to OSS:', {
-              originalUrl: originalImageUrl,
-              newUrl: imageUrl,
-              isValidUrl: imageUrl.startsWith('https://')
-            });
-          } catch (error) {
-            console.error('❌ Failed to upload image to OSS:', error);
-            tasks.push({
-              taskId: null,
-              imageIndex: i,
-              imageName: image.filename,
-              status: 'failed',
-              error: `Failed to upload image to OSS: ${error instanceof Error ? error.message : 'Unknown error'}`
-            });
-            continue;
-          }
-        } else {
-          console.log('🌐 Using provided public URL:', imageUrl);
-        }
-
-        // Prepare request data for first image
-        const requestData = {
-          req_key: 'jimeng_vgfm_t2v_l20',
-          prompt: prompt,
-          seed: seed,
-          aspect_ratio: aspectRatio,
-          image_urls: [imageUrl],
-          input_image_url: imageUrl
-        };
-
-        const payload = JSON.stringify(requestData);
-        const queryString = 'Action=CVSync2AsyncSubmitTask&Version=2022-08-31';
-        
-        console.log('🚀 Final JIMeng API request details:', {
-          imageUrl: imageUrl,
-          imageUrlType: imageUrl.startsWith('https://') ? 'public' : 'local',
-          prompt: prompt,
-          aspectRatio: aspectRatio
-        });
-        console.log('📤 JIMeng request payload:', payload);
-
-        // Use VolcEngine SDK for signing
-        const openApiRequestData = {
-          region: REGION,
-          method: 'POST',
-          params: {
-            Action: 'CVSync2AsyncSubmitTask',
-            Version: '2022-08-31'
-          },
-          headers: {
-            'Content-Type': 'application/json; charset=utf-8',
-            'Host': JIMENG_ENDPOINT
-          },
-          body: payload
-        };
-
-        const signer = new Signer(openApiRequestData, SERVICE);
-        
-        // Add authorization header using VolcEngine SDK
-        signer.addAuthorization({
-          accessKeyId,
-          secretKey: secretAccessKey,
-          sessionToken: ''
-        });
-
-        console.log('Request headers after signing:', openApiRequestData.headers);
-
-        try {
-          // Submit task to JIMeng API
-          const response = await fetch(`https://${JIMENG_ENDPOINT}?${queryString}`, {
-            method: 'POST',
-            headers: openApiRequestData.headers,
-            body: payload
-          });
-
-          const result = await response.json();
-          console.log(`JIMeng API response for image ${i + 1}:`, result);
-          
-          // JIMeng API returns success with code 10000 and task_id in data field
-          if (response.ok && result.code === 10000 && result.data?.task_id) {
-            console.log(`✅ Successfully submitted task ${result.data.task_id} for image ${i + 1}`);
-            tasks.push({
-              taskId: result.data.task_id,
-              imageIndex: i,
-              imageName: image.filename,
-              status: 'submitted',
-              prompt: prompt,
-              imageUrl: imageUrl // Store the processed image URL for later use
-            });
-          } else {
-            console.error(`❌ JIMeng API error for image ${i + 1}:`, result);
-            tasks.push({
-              taskId: null,
-              imageIndex: i,
-              imageName: image.filename,
-              status: 'failed',
-              error: result.message || 'Unknown error'
-            });
-          }
-        } catch (error) {
-          console.error(`❌ Error submitting image ${i + 1} to JIMeng API:`, error);
+        if (!ossConfigured) {
+          console.error('❌ OSS not configured but local image detected');
           tasks.push({
             taskId: null,
             imageIndex: i,
             imageName: image.filename,
             status: 'failed',
-            error: error instanceof Error ? error.message : 'Unknown error'
+            error: 'OSS not configured for local image upload'
           });
+          continue;
+        }
+        
+        try {
+          const originalImageUrl = imageUrl;
+          imageUrl = await uploadImageToOSS(image.url, image.filename);
+          console.log('✅ Successfully uploaded to OSS:', {
+            originalUrl: originalImageUrl,
+            newUrl: imageUrl,
+            isValidUrl: imageUrl.startsWith('https://')
+          });
+        } catch (error) {
+          console.error('❌ Failed to upload image to OSS:', error);
+          tasks.push({
+            taskId: null,
+            imageIndex: i,
+            imageName: image.filename,
+            status: 'failed',
+            error: `Failed to upload image to OSS: ${error instanceof Error ? error.message : 'Unknown error'}`
+          });
+          continue;
         }
       } else {
-        // Mark remaining images as queued
-        console.log(`Queuing image ${i + 1}: ${image.filename}`);
+        console.log('🌐 Using provided public URL:', imageUrl);
+      }
+
+      // Prepare content array for VolcEngine API
+      const content: ContentItem[] = [
+        {
+          type: "text",
+          text: `${prompt} --resolution 720p --duration ${duration} --ratio ${aspectRatio} --watermark true --camerafixed false${seed !== -1 ? ` --seed ${seed}` : ''}`
+        }
+      ];
+
+      // Determine model and content based on whether we have an image
+      let modelId: string;
+      let ratioParam: string;
+      const isImageToVideo = imageUrl && imageUrl !== '';
+      
+      if (isImageToVideo) {
+        // Image-to-video: use i2v model and include image
+        modelId = "doubao-seedance-1-0-lite-i2v-250428";
+        ratioParam = "adaptive"; // For i2v, only adaptive and keep_ratio are supported
+        content.push({
+          type: "image_url",
+          image_url: {
+            url: imageUrl
+          }
+        });
+      } else {
+        // Text-to-video: use t2v model, no image
+        modelId = "doubao-seedance-1-0-lite-t2v-250428";
+        ratioParam = aspectRatio; // For t2v, we can use specific ratios like 16:9, 9:16 etc.
+      }
+
+      // Update the text content with the correct ratio
+      (content[0] as ContentTextItem).text = `${prompt} --resolution 720p --duration ${duration} --ratio ${ratioParam} --watermark true --camerafixed false${seed !== -1 ? ` --seed ${seed}` : ''}`;
+
+      // Prepare request data for VolcEngine content generation API
+      const requestData = {
+        model: modelId,
+        content: content
+      };
+
+      console.log('🚀 Final VolcEngine API request details:', {
+        model: requestData.model,
+        processingType: isImageToVideo ? 'Image-to-Video' : 'Text-to-Video',
+        imageUrl: imageUrl,
+        imageUrlType: imageUrl.startsWith('https://') ? 'public' : 'local',
+        prompt: prompt,
+        aspectRatio: aspectRatio,
+        actualRatio: ratioParam,
+        duration: duration
+      });
+      console.log('📤 VolcEngine request payload:', JSON.stringify(requestData, null, 2));
+
+      try {
+        // Submit task to VolcEngine ARK API
+        const response = await fetch(`${ARK_BASE_URL}/contents/generations/tasks`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${volcEngineApiKey}`
+          },
+          body: JSON.stringify(requestData)
+        });
+
+        console.log(`VolcEngine API response status for image ${i + 1}:`, response.status);
+        console.log(`VolcEngine API response headers for image ${i + 1}:`, Object.fromEntries(response.headers.entries()));
+        
+        // Check if response has content
+        const responseText = await response.text();
+        console.log(`VolcEngine API response text for image ${i + 1}:`, responseText);
+        
+        let result;
+        try {
+          result = responseText ? JSON.parse(responseText) : {};
+        } catch (parseError) {
+          console.error(`Failed to parse JSON response for image ${i + 1}:`, parseError);
+          result = { error: { message: `Invalid JSON response: ${responseText}` } };
+        }
+        
+        console.log(`VolcEngine API response for image ${i + 1}:`, result);
+        
+        // VolcEngine API returns success with task ID
+        if (response.ok && result.id) {
+          console.log(`✅ Successfully submitted task ${result.id} for image ${i + 1}`);
+          tasks.push({
+            taskId: result.id,
+            imageIndex: i,
+            imageName: image.filename,
+            status: 'submitted',
+            prompt: prompt,
+            imageUrl: imageUrl // Store the processed image URL for later use
+          });
+        } else {
+          console.error(`❌ VolcEngine API error for image ${i + 1}:`, result);
+          const errorMessage = result.error?.message || result.message || result.error || `HTTP ${response.status}: ${responseText}`;
+          tasks.push({
+            taskId: null,
+            imageIndex: i,
+            imageName: image.filename,
+            status: 'failed',
+            error: errorMessage
+          });
+        }
+      } catch (error) {
+        console.error(`❌ Error submitting image ${i + 1} to VolcEngine API:`, error);
         tasks.push({
           taskId: null,
           imageIndex: i,
           imageName: image.filename,
-          status: 'queued',
-          prompt: prompt,
-          imageUrl: image.url // Store original URL, will be processed when it's their turn
+          status: 'failed',
+          error: error instanceof Error ? error.message : 'Unknown error'
         });
       }
     }
 
     const submittedTasks = tasks.filter(t => t.status === 'submitted');
-    const queuedTasks = tasks.filter(t => t.status === 'queued');
     const failedTasks = tasks.filter(t => t.status === 'failed');
     
-    console.log(`\n=== INITIAL SETUP SUMMARY ===`);
+    console.log(`\n=== PROCESSING SUMMARY ===`);
     console.log(`Total images: ${images.length}`);
-    console.log(`Submitted (processing): ${submittedTasks.length}`);
-    console.log(`Queued (waiting): ${queuedTasks.length}`);
+    console.log(`Successfully submitted: ${submittedTasks.length}`);
     console.log(`Failed: ${failedTasks.length}`);
 
     return NextResponse.json({
@@ -343,13 +337,12 @@ export async function POST(request: NextRequest) {
       folderName: folderName,
       totalTasks: images.length,
       submittedTasks: submittedTasks.length,
-      queuedTasks: queuedTasks.length,
       failedTasks: failedTasks.length,
-      message: `Parallel processing started: ${submittedTasks.length} submitted, ${queuedTasks.length} queued, ${failedTasks.length} failed`
+      message: `All tasks processed: ${submittedTasks.length} submitted, ${failedTasks.length} failed`
     });
 
   } catch (error) {
-    console.error('Error in JIMeng video generation:', error);
+    console.error('Error in VolcEngine video generation:', error);
     return NextResponse.json(
       { error: 'Failed to process video generation request' },
       { status: 500 }
@@ -367,92 +360,107 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Task ID is required' }, { status: 400 });
     }
 
-    const accessKeyIdRaw = process.env.JiMeng_AccessKeyId;
-    const secretAccessKeyRaw = process.env.JiMeng_SecretAccessKey;
+    const volcEngineApiKey = process.env.VOLCENGINE_API_KEY;
 
-    if (!accessKeyIdRaw || !secretAccessKeyRaw) {
+    if (!volcEngineApiKey) {
       return NextResponse.json(
-        { error: 'JIMeng API credentials not found' },
+        { error: 'VolcEngine API key not found' },
         { status: 500 }
       );
     }
 
-    // AccessKeyId should be used as-is, but SecretAccessKey might need base64 decoding
-    const accessKeyId = accessKeyIdRaw;
-    let secretAccessKey = secretAccessKeyRaw;
-    
-    // Try to decode SecretAccessKey if it looks like base64
+    console.log('Checking task status for:', taskId);
+
     try {
-      const decodedSecret = Buffer.from(secretAccessKeyRaw, 'base64').toString('utf-8');
-      if (decodedSecret && decodedSecret.length > 0 && !decodedSecret.includes('')) {
-        secretAccessKey = decodedSecret;
-      }
-    } catch (error) {
-      // Use raw if decoding fails
-    }
-
-    const queryString = `Action=CVSync2AsyncGetResult&Version=2022-08-31`;
-    
-    // Prepare request data for status check
-    const requestData = {
-      req_key: 'jimeng_vgfm_t2v_l20', // Use same req_key as submission
-      task_id: taskId
-    };
-
-    const payload = JSON.stringify(requestData);
-    
-    // Use VolcEngine SDK for signing
-    const openApiRequestData = {
-      region: REGION,
-      method: 'POST',
-      params: {
-        Action: 'CVSync2AsyncGetResult',
-        Version: '2022-08-31'
-      },
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Host': JIMENG_ENDPOINT
-      },
-      body: payload
-    };
-
-    const signer = new Signer(openApiRequestData, SERVICE);
-    
-    // Add authorization header using VolcEngine SDK
-    signer.addAuthorization({
-      accessKeyId,
-      secretKey: secretAccessKey,
-      sessionToken: ''
-    });
-
-    console.log('Status check request headers:', openApiRequestData.headers);
-    console.log('Status check request payload:', payload);
-    console.log('Status check request URL:', `https://${JIMENG_ENDPOINT}?${queryString}`);
-
-    const response = await fetch(`https://${JIMENG_ENDPOINT}?${queryString}`, {
-      method: 'POST',
-      headers: openApiRequestData.headers,
-      body: payload
-    });
-
-    const result = await response.json();
-    console.log('JIMeng status check response:', result);
-
-    // Check if the response is successful and contains result data
-    if (response.ok && result.code === 10000) {
-      return NextResponse.json({
-        success: true,
-        data: result.data // Return the data directly
+      // Query task status from VolcEngine ARK API
+      const response = await fetch(`${ARK_BASE_URL}/contents/generations/tasks/${taskId}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${volcEngineApiKey}`
+        }
       });
-    } else {
+
+      console.log('VolcEngine status check response status:', response.status);
+      console.log('VolcEngine status check response headers:', Object.fromEntries(response.headers.entries()));
+      
+      const responseText = await response.text();
+      console.log('VolcEngine status check response text:', responseText);
+      
+      let result;
+      try {
+        result = responseText ? JSON.parse(responseText) : {};
+      } catch (parseError) {
+        console.error('Failed to parse JSON response in status check:', parseError);
+        result = { error: { message: `Invalid JSON response: ${responseText}` } };
+      }
+      
+      console.log('VolcEngine status check response:', result);
+
+      // Check if the response is successful
+      if (response.ok && result.id) {
+        // Normalize VolcEngine response to match frontend expectations
+        let status = result.status;
+        let videoUrl = null;
+        
+        console.log('🔄 Status mapping - Original VolcEngine status:', status);
+        
+        // Convert VolcEngine status to frontend-expected format
+        if (status === 'succeeded') {
+          status = 'done'; // Frontend expects 'done' for completed videos
+          videoUrl = result.content?.video_url || null;
+        } else if (status === 'failed') {
+          status = 'failed'; // Keep as 'failed'
+        } else if (status === 'running') {
+          status = 'processing';
+        } else if (status === 'queued') {
+          status = 'pending';
+        }
+        
+        console.log('✅ Status mapping - Mapped status for frontend:', status);
+        console.log('🎥 Video URL extracted:', videoUrl ? 'Available' : 'Not available');
+        
+        const responseData = {
+          success: true,
+          data: {
+            task_id: result.id,
+            status: status,
+            video_url: videoUrl,
+            error_message: result.error || null,
+            created_at: result.created_at,
+            updated_at: result.updated_at,
+            usage: result.usage
+          }
+        };
+        
+        console.log('📤 Final response being sent to frontend:', JSON.stringify(responseData, null, 2));
+        
+        return NextResponse.json(responseData);
+      } else {
+        const errorMessage = result.error?.message || result.message || result.error || `HTTP ${response.status}: ${responseText}`;
+        return NextResponse.json({
+          success: false,
+          data: {
+            task_id: taskId,
+            status: 'failed',
+            error_message: errorMessage // Frontend expects 'error_message'
+          }
+        });
+      }
+
+    } catch (error) {
+      console.error('Error checking task status:', error);
       return NextResponse.json({
         success: false,
-        data: result
+        data: {
+          task_id: taskId,
+          status: 'failed',
+          error_message: error instanceof Error ? error.message : 'Unknown error'
+        }
       });
     }
 
   } catch (error) {
-    console.error('Error checking task status:', error);
+    console.error('Error in status check endpoint:', error);
     return NextResponse.json(
       { error: 'Failed to check task status' },
       { status: 500 }

@@ -125,6 +125,10 @@ export default function SessionSidebar({
 
   const startEditing = (session: SessionMetadata, e: React.MouseEvent) => {
     e.stopPropagation();
+    // Don't allow editing if session name is synced with folder name (not "untitled")
+    if (session.name !== 'untitled') {
+      return; // Disable editing for folder-synced names
+    }
     setEditingSessionId(session.id);
     setEditingName(session.name);
   };
@@ -307,13 +311,22 @@ export default function SessionSidebar({
                             </h4>
                             {!isCollapsed && (
                               <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
-                                <button
-                                  onClick={(e) => startEditing(session, e)}
-                                  className="p-1 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50"
-                                  title={dict.sessionSidebar.renameSession}
-                                >
-                                  ✏️
-                                </button>
+                                {session.name === 'untitled' ? (
+                                  <button
+                                    onClick={(e) => startEditing(session, e)}
+                                    className="p-1 rounded text-gray-400 hover:text-blue-600 hover:bg-blue-50"
+                                    title={dict.sessionSidebar.renameSession}
+                                  >
+                                    ✏️
+                                  </button>
+                                ) : (
+                                  <span
+                                    className="p-1 rounded text-gray-300 cursor-not-allowed"
+                                    title="Session name synced with folder name"
+                                  >
+                                    🔗
+                                  </span>
+                                )}
                                 <button
                                   onClick={(e) => handleDeleteSession(session.id, e)}
                                   className="p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
