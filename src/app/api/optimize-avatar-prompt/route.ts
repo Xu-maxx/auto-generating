@@ -13,17 +13,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No description or messages provided' }, { status: 400 });
     }
 
-    let conversationMessages;
-
-    if (messages && Array.isArray(messages) && messages.length > 0) {
-      // Handle conversation-based optimization (for refinements)
-      conversationMessages = messages;
-    } else {
-      // Handle initial description optimization
-      conversationMessages = [
-        {
-          role: 'system',
-          content: `You are an expert prompt engineer for AI image generation, specifically for creating avatars and portraits. Your task is to transform a simple description into a detailed, optimized prompt that will generate high-quality avatar images.
+    // System prompt that defines the response format
+    const systemPrompt = {
+      role: 'system',
+      content: `You are an expert prompt engineer for AI image generation, specifically for creating avatars and portraits. Your task is to transform a simple description into a detailed, optimized prompt that will generate high-quality avatar images.
 
 Guidelines for avatar prompts:
 1. Focus on facial features, expression, and upper body/portrait composition
@@ -43,13 +36,38 @@ Transform the user's description into a comprehensive prompt that will generate 
 [The Chinese translation of the runway prompt]
 
 Make sure to follow this exact format with the headers and structure.`
-        },
+    };
+
+    let conversationMessages;
+
+    if (messages && Array.isArray(messages) && messages.length > 0) {
+      // Handle conversation-based optimization (for refinements)
+      // Always include the system prompt to ensure proper formatting
+      conversationMessages = [systemPrompt, ...messages];
+      
+      // If there's a new description, add it as the latest user message
+      if (description) {
+        conversationMessages.push({
+          role: 'user',
+          content: description
+        });
+      }
+    } else {
+      // Handle initial description optimization
+      conversationMessages = [
+        systemPrompt,
         {
           role: 'user',
           content: description
         }
       ];
     }
+
+    console.log('🤖 OpenAI conversation messages:', {
+      messageCount: conversationMessages.length,
+      hasSystemPrompt: conversationMessages[0]?.role === 'system',
+      lastUserMessage: conversationMessages[conversationMessages.length - 1]?.content?.substring(0, 100) + '...'
+    });
 
     const response = await openai.chat.completions.create({
       model: 'gpt-4o',
@@ -60,15 +78,26 @@ Make sure to follow this exact format with the headers and structure.`
 
     const fullResponse = response.choices[0]?.message?.content?.trim() || '';
     
+    console.log('🤖 OpenAI raw response:', fullResponse.substring(0, 200) + '...');
+    
     // Parse the response to extract runway prompt and Chinese translation
     const parsePromptResponse = (response: string) => {
       const runwayPromptMatch = response.match(/\*\*RUNWAY PROMPT:\*\*\s*([\s\S]*?)(?=\*\*CHINESE TRANSLATION:\*\*|$)/);
       const chineseTranslationMatch = response.match(/\*\*CHINESE TRANSLATION:\*\*\s*([\s\S]*?)$/);
       
-      return {
+      const parsed = {
         runwayPrompt: runwayPromptMatch ? runwayPromptMatch[1].trim() : response,
         chineseTranslation: chineseTranslationMatch ? chineseTranslationMatch[1].trim() : ''
       };
+      
+      console.log('📝 Parsed response:', {
+        runwayPromptLength: parsed.runwayPrompt.length,
+        chineseTranslationLength: parsed.chineseTranslation.length,
+        runwayPromptPreview: parsed.runwayPrompt.substring(0, 100) + '...',
+        chineseTranslationPreview: parsed.chineseTranslation.substring(0, 100) + '...'
+      });
+      
+      return parsed;
     };
 
     const { runwayPrompt, chineseTranslation } = parsePromptResponse(fullResponse);

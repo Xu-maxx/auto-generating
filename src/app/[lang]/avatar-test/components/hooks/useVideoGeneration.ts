@@ -12,6 +12,9 @@ export const useVideoGeneration = () => {
   const [motionStatus, setMotionStatus] = useState<string>('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string>('');
+  
+  // Use ref instead of state to avoid closure issues
+  const statusCheckIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const [statusCheckIntervals, setStatusCheckIntervals] = useState<Map<string, NodeJS.Timeout>>(new Map());
 
   const checkVideoStatus = async (videoId: string) => {
@@ -44,14 +47,17 @@ export const useVideoGeneration = () => {
         
         // Stop polling if video is completed or failed
         if (data.status === 'completed' || data.status === 'failed') {
+          console.log(`🛑 Video ${videoId} ${data.status}, stopping polling...`);
           clearVideoStatusInterval(videoId);
           
           if (data.status === 'completed' && data.videoUrl) {
-            console.log('🎬 Video generation completed successfully!');
+            console.log(`✅ Video generation completed successfully for ${videoId}!`);
             // Success notification will be handled in the component
           } else if (data.status === 'failed') {
-            console.log('❌ Video generation failed');
+            console.log(`❌ Video generation failed for ${videoId}`);
           }
+        } else {
+          console.log(`⏳ Video ${videoId} status: ${data.status} - continuing to poll...`);
         }
       } else {
         console.error('Failed to check video status:', data.error);
@@ -62,26 +68,54 @@ export const useVideoGeneration = () => {
   };
 
   const startVideoStatusInterval = (videoId: string) => {
+    console.log(`🚀 Starting video status polling for ${videoId}`);
+    
     const interval = setInterval(() => {
       checkVideoStatus(videoId);
     }, 5000); // Check every 5 seconds
     
+    // Store in both ref and state
+    statusCheckIntervalsRef.current.set(videoId, interval);
     setStatusCheckIntervals(prev => new Map(prev.set(videoId, interval)));
   };
 
   const clearVideoStatusInterval = (videoId: string) => {
-    const interval = statusCheckIntervals.get(videoId);
+    console.log(`🛑 Clearing video status interval for ${videoId}`);
+    
+    // Clear from ref (primary source)
+    const interval = statusCheckIntervalsRef.current.get(videoId);
     if (interval) {
       clearInterval(interval);
-      setStatusCheckIntervals(prev => {
-        const newMap = new Map(prev);
-        newMap.delete(videoId);
-        return newMap;
-      });
+      statusCheckIntervalsRef.current.delete(videoId);
+      console.log(`✅ Successfully cleared interval for ${videoId}`);
+    } else {
+      console.warn(`⚠️ No interval found in ref for ${videoId}`);
     }
+    
+    // Also clear from state for consistency
+    setStatusCheckIntervals(prev => {
+      const newMap = new Map(prev);
+      const stateInterval = newMap.get(videoId);
+      if (stateInterval) {
+        clearInterval(stateInterval);
+        newMap.delete(videoId);
+        console.log(`✅ Also cleared interval from state for ${videoId}`);
+      }
+      return newMap;
+    });
   };
 
   const clearAllVideoStatusIntervals = () => {
+    console.log(`🛑 Clearing all video status intervals (${statusCheckIntervalsRef.current.size} active)`);
+    
+    // Clear from ref (primary source)
+    statusCheckIntervalsRef.current.forEach((interval, videoId) => {
+      clearInterval(interval);
+      console.log(`✅ Cleared interval for ${videoId}`);
+    });
+    statusCheckIntervalsRef.current.clear();
+    
+    // Also clear from state
     statusCheckIntervals.forEach((interval) => {
       clearInterval(interval);
     });

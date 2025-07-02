@@ -1,23 +1,58 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { ExistingImage, GeneratedAvatar } from '../types';
 
-export const useImageManagement = () => {
+interface UseImageManagementProps {
+  sessionSelectedAvatars?: (ExistingImage | GeneratedAvatar)[];
+  onSelectedAvatarsChange?: (avatars: (ExistingImage | GeneratedAvatar)[]) => void;
+}
+
+export const useImageManagement = ({ 
+  sessionSelectedAvatars = [], 
+  onSelectedAvatarsChange 
+}: UseImageManagementProps = {}) => {
   const [existingImages, setExistingImages] = useState<ExistingImage[]>([]);
-  const [selectedAvatars, setSelectedAvatars] = useState<(ExistingImage | GeneratedAvatar)[]>([]);
+  const [selectedAvatars, setSelectedAvatars] = useState<(ExistingImage | GeneratedAvatar)[]>(sessionSelectedAvatars);
+  const [loading, setLoading] = useState(false);
+
+  // Sync selected avatars from session when session changes
+  useEffect(() => {
+    setSelectedAvatars(sessionSelectedAvatars);
+    // Update existing images selection state based on session
+    setExistingImages(prev => prev.map(img => ({
+      ...img,
+      selected: sessionSelectedAvatars.some(avatar => avatar.id === img.id)
+    })));
+  }, [sessionSelectedAvatars]);
 
   // Load existing images from the generated-images directory
   const loadExistingImages = async () => {
     try {
+      setLoading(true);
+      console.log('🔄 Loading existing images...');
+      
       const response = await fetch('/api/list-existing-images');
       const data = await response.json();
       
       if (data.success) {
-        setExistingImages(data.images || []);
+        const images = data.images || [];
+        console.log(`✅ Loaded ${images.length} existing images`);
+        
+        // Mark images as selected based on current session
+        const imagesWithSelection = images.map((img: ExistingImage) => ({
+          ...img,
+          selected: sessionSelectedAvatars.some(avatar => avatar.id === img.id)
+        }));
+        
+        setExistingImages(imagesWithSelection);
       } else {
-        console.error('Failed to load existing images:', data.error);
+        console.error('❌ Failed to load existing images:', data.error);
+        setExistingImages([]);
       }
     } catch (error) {
-      console.error('Error loading existing images:', error);
+      console.error('❌ Error loading existing images:', error);
+      setExistingImages([]);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -49,45 +84,59 @@ export const useImageManagement = () => {
   const selectExistingImage = (image: ExistingImage) => {
     const isSelected = selectedAvatars.some(avatar => avatar.id === image.id);
     
+    let newSelectedAvatars: (ExistingImage | GeneratedAvatar)[];
+    
     if (isSelected) {
       // Remove from selection
-      setSelectedAvatars(prev => prev.filter(avatar => avatar.id !== image.id));
-      const updatedImages = existingImages.map(img => ({
-        ...img,
-        selected: img.id === image.id ? false : img.selected
-      }));
-      setExistingImages(updatedImages);
+      newSelectedAvatars = selectedAvatars.filter(avatar => avatar.id !== image.id);
+      setExistingImages(prev => prev.map(img => 
+        img.id === image.id ? { ...img, selected: false } : img
+      ));
     } else {
       // Add to selection
-      setSelectedAvatars(prev => [...prev, image]);
-      const updatedImages = existingImages.map(img => ({
-        ...img,
-        selected: img.id === image.id ? true : img.selected
-      }));
-      setExistingImages(updatedImages);
+      newSelectedAvatars = [...selectedAvatars, image];
+      setExistingImages(prev => prev.map(img => 
+        img.id === image.id ? { ...img, selected: true } : img
+      ));
     }
+    
+    setSelectedAvatars(newSelectedAvatars);
+    // Sync to session
+    onSelectedAvatarsChange?.(newSelectedAvatars);
   };
 
   // Select a generated avatar (toggle selection)
   const selectGeneratedAvatar = (avatar: GeneratedAvatar) => {
     const isSelected = selectedAvatars.some(selected => selected.id === avatar.id);
     
+    let newSelectedAvatars: (ExistingImage | GeneratedAvatar)[];
+    
     if (isSelected) {
-      setSelectedAvatars(prev => prev.filter(selected => selected.id !== avatar.id));
+      newSelectedAvatars = selectedAvatars.filter(selected => selected.id !== avatar.id);
     } else {
-      setSelectedAvatars(prev => [...prev, avatar]);
+      newSelectedAvatars = [...selectedAvatars, avatar];
     }
+    
+    setSelectedAvatars(newSelectedAvatars);
+    // Sync to session
+    onSelectedAvatarsChange?.(newSelectedAvatars);
   };
 
   const selectAllImages = () => {
     const unselectedImages = existingImages.filter(img => !img.selected);
-    setSelectedAvatars(prev => [...prev, ...unselectedImages]);
+    const newSelectedAvatars = [...selectedAvatars, ...unselectedImages];
+    
+    setSelectedAvatars(newSelectedAvatars);
     setExistingImages(prev => prev.map(img => ({ ...img, selected: true })));
+    // Sync to session
+    onSelectedAvatarsChange?.(newSelectedAvatars);
   };
 
   const clearSelection = () => {
     setSelectedAvatars([]);
     setExistingImages(prev => prev.map(img => ({ ...img, selected: false })));
+    // Sync to session
+    onSelectedAvatarsChange?.([]);
   };
 
   const selectAllGeneratedAvatars = () => {
@@ -95,17 +144,29 @@ export const useImageManagement = () => {
     // For now, keeping it simple
   };
 
+  // Remove a specific avatar from selection
+  const removeSelectedAvatar = (avatarId: string) => {
+    const newSelectedAvatars = selectedAvatars.filter(avatar => avatar.id !== avatarId);
+    
+    setSelectedAvatars(newSelectedAvatars);
+    setExistingImages(prev => prev.map(img => 
+      img.id === avatarId ? { ...img, selected: false } : img
+    ));
+    // Sync to session
+    onSelectedAvatarsChange?.(newSelectedAvatars);
+  };
+
   return {
     existingImages,
     selectedAvatars,
-    setExistingImages,
-    setSelectedAvatars,
+    loading,
     loadExistingImages,
     handleFileUpload,
     selectExistingImage,
     selectGeneratedAvatar,
     selectAllImages,
     clearSelection,
-    selectAllGeneratedAvatars
+    selectAllGeneratedAvatars,
+    removeSelectedAvatar
   };
 }; 

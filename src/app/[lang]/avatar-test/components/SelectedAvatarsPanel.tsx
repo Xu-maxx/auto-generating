@@ -8,6 +8,7 @@ interface SelectedAvatarsPanelProps {
   uploadStatus: string;
   avatarSession: AvatarSessionData | null;
   onGenerateCompleteVideo: () => void;
+  onRemoveAvatar: (avatarId: string) => void;
   isAddingMotion: boolean;
   motionStatus: string;
   isGeneratingVideo: boolean;
@@ -20,6 +21,7 @@ export default function SelectedAvatarsPanel({
   uploadStatus,
   avatarSession,
   onGenerateCompleteVideo,
+  onRemoveAvatar,
   isAddingMotion,
   motionStatus,
   isGeneratingVideo,
@@ -50,6 +52,20 @@ export default function SelectedAvatarsPanel({
                 className="w-full h-full object-cover"
               />
             </div>
+            
+            {/* Delete button in upper left corner */}
+            <button
+              onClick={() => onRemoveAvatar(avatar.id)}
+              disabled={isProcessing}
+              className="absolute -top-2 -left-2 w-6 h-6 bg-red-500 hover:bg-red-600 disabled:bg-gray-400 rounded-full flex items-center justify-center transition-colors"
+              title="Remove avatar"
+            >
+              <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+            </button>
+            
+            {/* Selection checkmark in upper right corner */}
             <div className="absolute -top-2 -right-2 w-6 h-6 bg-green-500 rounded-full flex items-center justify-center">
               <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -92,10 +108,13 @@ export default function SelectedAvatarsPanel({
       {/* Help Text */}
       <div className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
         <p className="text-xs text-gray-600">
-          💡 <strong>Complete Workflow:</strong> Upload → Add Motion → Generate Video (requires custom generated audio)
+          💡 <strong>Complete Integrated Workflow:</strong> Voice Selection → Audio Generation → Avatar Upload → Add Motion → Generate Videos (all in one process)
         </p>
-        <p className="text-xs text-blue-600 mt-1">
-          ⚡ <strong>Note:</strong> Generate your custom audio first using the Video Settings panel above
+        <p className="text-xs text-green-600 mt-1">
+          🎤 <strong>Smart Features:</strong> AI analyzes your avatars and descriptions to automatically select the perfect voice and generate custom audio
+        </p>
+        <p className="text-xs text-purple-600 mt-1">
+          🎬 <strong>Multi-Video:</strong> Generates separate videos for each selected avatar using the same audio
         </p>
       </div>
     </div>

@@ -1,14 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AvatarSessionManager, AvatarSessionData } from '@/utils/avatarSessionManager';
 
+// GET all avatar sessions
+export async function GET(request: NextRequest) {
+  try {
+    const sessions = await AvatarSessionManager.getAllSessions();
+    return NextResponse.json({ success: true, sessions });
+  } catch (error) {
+    console.error('Error getting avatar sessions:', error);
+    return NextResponse.json(
+      { error: 'Failed to get avatar sessions' },
+      { status: 500 }
+    );
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { action, sessionId, sessionData, assetId, motionAvatarId } = await request.json();
+    const { action, sessionId, sessionData, assetId, motionAvatarId, name } = await request.json();
 
     switch (action) {
       case 'create':
         try {
-          const newSession = await AvatarSessionManager.createSession();
+          const newSession = await AvatarSessionManager.createSession(name);
           return NextResponse.json({ 
             success: true, 
             session: newSession 
@@ -56,6 +70,48 @@ export async function POST(request: NextRequest) {
           console.error('Error saving avatar session:', error);
           return NextResponse.json(
             { error: 'Failed to save avatar session' },
+            { status: 500 }
+          );
+        }
+
+      case 'saveComplete':
+        if (!sessionData) {
+          return NextResponse.json({ error: 'Session data required' }, { status: 400 });
+        }
+        
+        try {
+          await AvatarSessionManager.saveCompleteSessionState(sessionData as AvatarSessionData);
+          const updatedSession = await AvatarSessionManager.getSession(sessionData.id);
+          return NextResponse.json({ 
+            success: true, 
+            session: updatedSession 
+          });
+        } catch (error) {
+          console.error('Error saving complete avatar session state:', error);
+          return NextResponse.json(
+            { error: 'Failed to save complete avatar session state' },
+            { status: 500 }
+          );
+        }
+
+      case 'updateName':
+        if (!sessionId || !name) {
+          return NextResponse.json({ 
+            error: 'Session ID and name required' 
+          }, { status: 400 });
+        }
+        
+        try {
+          await AvatarSessionManager.updateSessionName(sessionId, name);
+          const updatedSession = await AvatarSessionManager.getSession(sessionId);
+          return NextResponse.json({ 
+            success: true, 
+            session: updatedSession 
+          });
+        } catch (error) {
+          console.error('Error updating session name:', error);
+          return NextResponse.json(
+            { error: 'Failed to update session name' },
             { status: 500 }
           );
         }

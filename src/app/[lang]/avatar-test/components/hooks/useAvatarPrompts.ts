@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { AvatarPrompt, ConversationMessage, GeneratedAvatar } from '../types';
+import { COMBINED_RATIO_RESOLUTION_OPTIONS, CombinedRatioResolutionOption } from '@/utils/imageRatioUtils';
 
 export const useAvatarPrompts = () => {
   const [avatarDescription, setAvatarDescription] = useState('');
@@ -7,6 +8,30 @@ export const useAvatarPrompts = () => {
   const [avatarPrompts, setAvatarPrompts] = useState<AvatarPrompt[]>([]);
   const [conversation, setConversation] = useState<ConversationMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
+  
+  // Add aspect ratio and resolution state
+  const [aspectRatio, setAspectRatio] = useState('16:9');
+  const [resolution, setResolution] = useState({width: 1920, height: 1080});
+  const [selectedCombinedOption, setSelectedCombinedOption] = useState<CombinedRatioResolutionOption>(
+    COMBINED_RATIO_RESOLUTION_OPTIONS.find(option => option.aspectRatio === '16:9' && option.isDefault) || 
+    COMBINED_RATIO_RESOLUTION_OPTIONS[0]
+  );
+
+  const handleRatioResolutionChange = (newAspectRatio: string, newResolution: {width: number, height: number}) => {
+    console.log('🔄 Avatar generation ratio/resolution change:', { newAspectRatio, newResolution });
+    setAspectRatio(newAspectRatio);
+    setResolution(newResolution);
+    
+    // Update the selected combined option
+    const newOption = COMBINED_RATIO_RESOLUTION_OPTIONS.find(
+      option => option.aspectRatio === newAspectRatio && 
+                option.width === newResolution.width && 
+                option.height === newResolution.height
+    );
+    if (newOption) {
+      setSelectedCombinedOption(newOption);
+    }
+  };
 
   const generatePrompt = async () => {
     setIsOptimizing(true);
@@ -84,7 +109,9 @@ export const useAvatarPrompts = () => {
         },
         body: JSON.stringify({
           promptText: prompt.runwayPrompt,
-          imageCount: imageCount
+          imageCount: imageCount,
+          aspectRatio: aspectRatio,
+          resolution: resolution
         }),
       });
 
@@ -95,6 +122,8 @@ export const useAvatarPrompts = () => {
         imagesCount: data.images?.length || 0,
         totalGenerated: data.totalGenerated,
         requested: data.requested,
+        aspectRatio: aspectRatio,
+        resolution: resolution,
         error: data.error
       });
 
@@ -177,6 +206,10 @@ export const useAvatarPrompts = () => {
     conversation,
     error,
     setError,
+    aspectRatio,
+    resolution,
+    selectedCombinedOption,
+    handleRatioResolutionChange,
     generatePrompt,
     handlePromptEdit,
     generateAvatars

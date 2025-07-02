@@ -1,4 +1,5 @@
 import { getRedisClient } from './redis';
+import { CombinedRatioResolutionOption, COMBINED_RATIO_RESOLUTION_OPTIONS } from '@/utils/imageRatioUtils';
 
 const AVATAR_SESSION_PREFIX = 'avatar:session:';
 const AVATAR_SESSION_LIST_KEY = 'avatar:sessions:list';
@@ -24,13 +25,97 @@ export interface AvatarGroup {
   motionEnabled?: boolean; // Whether group has motion-enabled avatars
 }
 
-export interface AvatarSessionData {
+// Extended interfaces for session data
+export interface GeneratedAvatar {
   id: string;
+  filename: string;
+  url: string;
+  prompt: string;
+  taskId: string;
+}
+
+export interface ExistingImage {
+  id: string;
+  url: string;
+  filename: string;
+  selected: boolean;
+}
+
+export interface AvatarPrompt {
+  id: number;
+  content: string;
+  runwayPrompt: string;
+  chineseTranslation: string;
+  isEdited: boolean;
+  specification?: string;
+  generatedImages: GeneratedAvatar[];
+  isGeneratingImages: boolean;
+  failedCount: number;
+}
+
+export interface ConversationMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  editedContent?: string;
+}
+
+export interface GeneratedVideo {
+  id: string;
+  videoId: string;
+  status: string;
+  videoUrl?: string;
+  downloadUrl?: string;
+  thumbnailUrl?: string;
+  duration?: number;
+  assetId: string;
+  voiceId: string;
+  text: string;
+  createdAt: string;
+  videoData?: any; // Store full video data from HeyGen
+}
+
+export interface AvatarSessionMetadata {
+  id: string;
+  name: string;
   createdAt: string;
   updatedAt: string;
+  avatarCount: number;
+  videoCount: number;
+  hasAvatarGroup: boolean;
+}
+
+export interface AvatarSessionData {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  
+  // Core avatar data
   avatarGroup?: AvatarGroup;
   uploadedAssets: AvatarAsset[];
   motionAvatars?: string[]; // Array of motion avatar IDs
+  
+  // Generated content
+  generatedVideos: GeneratedVideo[];
+  generatedAvatars: GeneratedAvatar[];
+  existingImages: ExistingImage[];
+  selectedAvatars: any[]; // Selected avatars for video generation
+  
+  // AI interaction data
+  avatarPrompts: AvatarPrompt[];
+  conversation: ConversationMessage[];
+  
+  // Form state
+  avatarDescription: string;
+  videoText: string;
+  activeTab: 'existing' | 'generate';
+  aspectRatio: string;
+  resolution: string;
+  selectedCombinedOption: CombinedRatioResolutionOption;
+  
+  // Counts for metadata
+  videoCount: number;
+  avatarCount: number;
 }
 
 export class AvatarSessionManager {
@@ -41,16 +126,42 @@ export class AvatarSessionManager {
   }
 
   // Create a new avatar session
-  static async createSession(): Promise<AvatarSessionData> {
+  static async createSession(name: string = 'Untitled Avatar Session'): Promise<AvatarSessionData> {
     const redis = await getRedisClient();
     const sessionId = this.generateSessionId();
     const now = new Date().toISOString();
     
     const sessionData: AvatarSessionData = {
       id: sessionId,
+      name: name,
       createdAt: now,
       updatedAt: now,
+      
+      // Core avatar data
       uploadedAssets: [],
+      motionAvatars: [],
+      
+      // Generated content
+      generatedVideos: [],
+      generatedAvatars: [],
+      existingImages: [],
+      selectedAvatars: [],
+      
+      // AI interaction data
+      avatarPrompts: [],
+      conversation: [],
+      
+      // Form state
+      avatarDescription: '',
+      videoText: '',
+      activeTab: 'existing' as const,
+      aspectRatio: '16:9',
+      resolution: '1024x576',
+      selectedCombinedOption: COMBINED_RATIO_RESOLUTION_OPTIONS.find(opt => opt.id === '16:9-1024x576') || COMBINED_RATIO_RESOLUTION_OPTIONS[0],
+      
+      // Counts for metadata
+      videoCount: 0,
+      avatarCount: 0,
     };
 
     // Store session data
@@ -61,6 +172,80 @@ export class AvatarSessionManager {
     
     console.log('✅ AvatarSessionManager: Created new session:', sessionId);
     return sessionData;
+  }
+
+  // Get all avatar sessions
+  static async getAllSessions(): Promise<AvatarSessionMetadata[]> {
+    const redis = await getRedisClient();
+    
+    try {
+      console.log('🔍 AvatarSessionManager: Getting all sessions from Redis');
+      const sessionIds = await redis.sMembers(AVATAR_SESSION_LIST_KEY);
+      console.log('📋 AvatarSessionManager: Found session IDs:', sessionIds);
+      
+      const sessions: AvatarSessionMetadata[] = [];
+      
+      for (const sessionId of sessionIds) {
+        try {
+          const sessionDataStr = await redis.hGet(`${AVATAR_SESSION_PREFIX}${sessionId}`, 'data');
+          if (sessionDataStr) {
+            const sessionData: AvatarSessionData = JSON.parse(sessionDataStr);
+            
+            // Calculate counts based on actual data
+            const avatarCount = (sessionData.uploadedAssets?.length || 0) + 
+                               (sessionData.generatedAvatars?.length || 0) + 
+                               (sessionData.existingImages?.length || 0);
+            const videoCount = sessionData.generatedVideos?.length || 0;
+            
+            const metadata: AvatarSessionMetadata = {
+              id: sessionData.id,
+              name: sessionData.name || 'Untitled Avatar Session',
+              createdAt: sessionData.createdAt,
+              updatedAt: sessionData.updatedAt,
+              avatarCount: avatarCount,
+              videoCount: videoCount,
+              hasAvatarGroup: !!sessionData.avatarGroup,
+            };
+            sessions.push(metadata);
+          }
+        } catch (error) {
+          console.error(`❌ AvatarSessionManager: Error loading session ${sessionId}:`, error);
+        }
+      }
+      
+      // Sort by updatedAt descending
+      sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      
+      console.log('✅ AvatarSessionManager: Loaded sessions:', sessions.length);
+      return sessions;
+    } catch (error) {
+      console.error('❌ AvatarSessionManager: Error loading all sessions:', error);
+      return [];
+    }
+  }
+
+  // Update session name
+  static async updateSessionName(sessionId: string, name: string): Promise<void> {
+    const session = await this.getSession(sessionId);
+    if (session) {
+      session.name = name;
+      await this.saveSession(session);
+      console.log('✅ AvatarSessionManager: Updated session name:', { sessionId, name });
+    } else {
+      throw new Error(`Avatar session ${sessionId} not found`);
+    }
+  }
+
+  // Increment video count
+  static async incrementVideoCount(sessionId: string): Promise<void> {
+    const session = await this.getSession(sessionId);
+    if (session) {
+      session.videoCount = (session.videoCount || 0) + 1;
+      await this.saveSession(session);
+      console.log('✅ AvatarSessionManager: Incremented video count:', { sessionId, videoCount: session.videoCount });
+    } else {
+      throw new Error(`Avatar session ${sessionId} not found`);
+    }
   }
 
   // Get session by ID
@@ -95,8 +280,12 @@ export class AvatarSessionManager {
     try {
       console.log('💾 AvatarSessionManager: Saving session to Redis:', sessionData.id);
       
-      // Update timestamp
+      // Update timestamp and counts
       sessionData.updatedAt = new Date().toISOString();
+      sessionData.avatarCount = (sessionData.uploadedAssets?.length || 0) + 
+                               (sessionData.generatedAvatars?.length || 0) + 
+                               (sessionData.existingImages?.length || 0);
+      sessionData.videoCount = sessionData.generatedVideos?.length || 0;
 
       // Save updated data
       await redis.hSet(`${AVATAR_SESSION_PREFIX}${sessionData.id}`, 'data', JSON.stringify(sessionData));
@@ -106,12 +295,49 @@ export class AvatarSessionManager {
       
       console.log('✅ AvatarSessionManager: Session saved successfully:', {
         id: sessionData.id,
-        hasAvatarGroup: !!sessionData.avatarGroup,
-        assetsCount: sessionData.uploadedAssets?.length || 0
+        avatarCount: sessionData.avatarCount,
+        videoCount: sessionData.videoCount,
+        hasAvatarGroup: !!sessionData.avatarGroup
       });
       
     } catch (error) {
       console.error(`❌ AvatarSessionManager: Error saving session ${sessionData.id}:`, error);
+      throw error;
+    }
+  }
+
+  // Save complete session state including all UI data
+  static async saveCompleteSessionState(sessionData: AvatarSessionData): Promise<void> {
+    const redis = await getRedisClient();
+    
+    try {
+      console.log('💾 AvatarSessionManager: Saving complete session state:', sessionData.id);
+      
+      // Update timestamp and counts
+      sessionData.updatedAt = new Date().toISOString();
+      sessionData.avatarCount = (sessionData.uploadedAssets?.length || 0) + 
+                               (sessionData.generatedAvatars?.length || 0) + 
+                               (sessionData.existingImages?.length || 0);
+      sessionData.videoCount = sessionData.generatedVideos?.length || 0;
+
+      // Save updated data
+      await redis.hSet(`${AVATAR_SESSION_PREFIX}${sessionData.id}`, 'data', JSON.stringify(sessionData));
+      
+      // Ensure session is in the list
+      await redis.sAdd(AVATAR_SESSION_LIST_KEY, sessionData.id);
+      
+      console.log('✅ AvatarSessionManager: Complete session state saved:', {
+        id: sessionData.id,
+        avatarCount: sessionData.avatarCount,
+        videoCount: sessionData.videoCount,
+        hasAvatarGroup: !!sessionData.avatarGroup,
+        hasPrompts: sessionData.avatarPrompts?.length > 0,
+        hasConversation: sessionData.conversation?.length > 0,
+        hasFormData: !!sessionData.avatarDescription || !!sessionData.videoText
+      });
+      
+    } catch (error) {
+      console.error(`❌ AvatarSessionManager: Error saving complete session state ${sessionData.id}:`, error);
       throw error;
     }
   }

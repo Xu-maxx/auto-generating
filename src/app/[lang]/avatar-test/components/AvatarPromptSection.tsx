@@ -1,4 +1,6 @@
 import { AvatarPrompt, ConversationMessage } from './types';
+import AspectRatioSelector from './AspectRatioSelector';
+import { CombinedRatioResolutionOption } from '@/utils/imageRatioUtils';
 
 interface AvatarPromptSectionProps {
   avatarDescription: string;
@@ -9,6 +11,9 @@ interface AvatarPromptSectionProps {
   onPromptEdit: (id: number, newRunwayPrompt: string) => void;
   onGenerateAvatars: (promptId: number, imageCount: number) => void;
   conversation: ConversationMessage[];
+  // Aspect ratio props
+  selectedCombinedOption: CombinedRatioResolutionOption;
+  onRatioResolutionChange: (aspectRatio: string, resolution: {width: number, height: number}) => void;
 }
 
 export default function AvatarPromptSection({
@@ -19,7 +24,9 @@ export default function AvatarPromptSection({
   avatarPrompts,
   onPromptEdit,
   onGenerateAvatars,
-  conversation
+  conversation,
+  selectedCombinedOption,
+  onRatioResolutionChange
 }: AvatarPromptSectionProps) {
   return (
     <div className="space-y-6">
@@ -37,6 +44,14 @@ export default function AvatarPromptSection({
             placeholder="Describe the avatar you want to generate (e.g., a professional business woman with short hair)"
             className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             rows={3}
+          />
+        </div>
+
+        {/* Aspect Ratio Selector */}
+        <div className="mb-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+          <AspectRatioSelector
+            selectedOption={selectedCombinedOption}
+            onRatioResolutionChange={onRatioResolutionChange}
           />
         </div>
 
@@ -88,6 +103,13 @@ export default function AvatarPromptSection({
                   </p>
                 </div>
               )}
+
+              {/* Current Settings Display */}
+              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm text-blue-800">
+                  <strong>📐 Image Settings:</strong> {selectedCombinedOption.label} {selectedCombinedOption.description}
+                </p>
+              </div>
 
               {/* Generate Images Controls */}
               <div className="flex items-center gap-3 mb-4">

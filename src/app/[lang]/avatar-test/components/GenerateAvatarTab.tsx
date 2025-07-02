@@ -1,6 +1,7 @@
 import AvatarPromptSection from './AvatarPromptSection';
 import GeneratedAvatarsGrid from './GeneratedAvatarsGrid';
 import { AvatarPrompt, ConversationMessage, GeneratedAvatar, ExistingImage } from './types';
+import { CombinedRatioResolutionOption } from '@/utils/imageRatioUtils';
 
 interface GenerateAvatarTabProps {
   avatarDescription: string;
@@ -15,6 +16,9 @@ interface GenerateAvatarTabProps {
   selectedAvatars: (ExistingImage | GeneratedAvatar)[];
   conversation: ConversationMessage[];
   error: string | null;
+  // Aspect ratio props
+  selectedCombinedOption: CombinedRatioResolutionOption;
+  onRatioResolutionChange: (aspectRatio: string, resolution: {width: number, height: number}) => void;
 }
 
 export default function GenerateAvatarTab({
@@ -29,7 +33,9 @@ export default function GenerateAvatarTab({
   onSelectAllGenerated,
   selectedAvatars,
   conversation,
-  error
+  error,
+  selectedCombinedOption,
+  onRatioResolutionChange
 }: GenerateAvatarTabProps) {
   return (
     <div className="space-y-6">
@@ -49,6 +55,8 @@ export default function GenerateAvatarTab({
         onPromptEdit={onPromptEdit}
         onGenerateAvatars={onGenerateAvatars}
         conversation={conversation}
+        selectedCombinedOption={selectedCombinedOption}
+        onRatioResolutionChange={onRatioResolutionChange}
       />
 
       <GeneratedAvatarsGrid

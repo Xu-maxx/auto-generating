@@ -5,6 +5,7 @@ import { ExistingImage, GeneratedAvatar } from './types';
 interface ExistingImagesTabProps {
   existingImages: ExistingImage[];
   selectedAvatars: (ExistingImage | GeneratedAvatar)[];
+  loading?: boolean;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFileUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
   onSelectImage: (image: ExistingImage) => void;
@@ -15,6 +16,7 @@ interface ExistingImagesTabProps {
 export default function ExistingImagesTab({
   existingImages,
   selectedAvatars,
+  loading = false,
   fileInputRef,
   onFileUpload,
   onSelectImage,
@@ -72,8 +74,18 @@ export default function ExistingImagesTab({
           />
         </div>
 
+        {/* Loading State */}
+        {loading && (
+          <div className="text-center py-12">
+            <div className="inline-flex items-center gap-2 text-gray-600">
+              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+              Loading images...
+            </div>
+          </div>
+        )}
+
         {/* Images Grid */}
-        {existingImages.length > 0 ? (
+        {!loading && existingImages.length > 0 ? (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
             {existingImages.map((image) => (
               <div
@@ -105,11 +117,11 @@ export default function ExistingImagesTab({
               </div>
             ))}
           </div>
-        ) : (
+        ) : !loading ? (
           <div className="text-center py-12 text-gray-500">
             <p>No images available. Upload some images or load existing ones.</p>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
