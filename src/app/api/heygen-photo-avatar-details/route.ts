@@ -3,10 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const photoAvatarId = searchParams.get('id');
+    const avatarId = searchParams.get('avatarId');
 
-    if (!photoAvatarId) {
-      return NextResponse.json({ error: 'No photo avatar ID provided' }, { status: 400 });
+    if (!avatarId) {
+      return NextResponse.json({ error: 'No avatar ID provided' }, { status: 400 });
     }
 
     if (!process.env.HEYGEN_API_KEY) {
@@ -14,9 +14,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'HeyGen API key not configured' }, { status: 500 });
     }
 
-    console.log('Getting photo avatar details for:', photoAvatarId);
+    console.log('Checking photo avatar details for:', avatarId);
 
-    const response = await fetch(`https://api.heygen.com/v2/photo_avatar/${photoAvatarId}`, {
+    const response = await fetch(`https://api.heygen.com/v2/photo_avatar/${avatarId}`, {
       method: 'GET',
       headers: {
         'X-Api-Key': process.env.HEYGEN_API_KEY,
@@ -47,13 +47,16 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({ 
       success: true,
-      photoAvatar: data.data || data
+      avatar: data.data,
+      status: data.data?.status,
+      isMotion: data.data?.is_motion,
+      motionPreviewUrl: data.data?.motion_preview_url
     });
 
   } catch (error) {
-    console.error('Error getting photo avatar details:', error);
+    console.error('Error checking photo avatar details:', error);
     return NextResponse.json(
-      { error: 'Failed to get photo avatar details' },
+      { error: 'Failed to check photo avatar details' },
       { status: 500 }
     );
   }

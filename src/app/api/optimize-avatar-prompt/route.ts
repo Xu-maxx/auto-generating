@@ -7,15 +7,15 @@ const openai = new OpenAI({
 
 export async function POST(request: NextRequest) {
   try {
-    const { description, messages, userRequirement } = await request.json();
+    const { description, messages } = await request.json();
 
-    if (!description && !messages) {
+    if (!description && (!messages || messages.length === 0)) {
       return NextResponse.json({ error: 'No description or messages provided' }, { status: 400 });
     }
 
     let conversationMessages;
 
-    if (messages && Array.isArray(messages)) {
+    if (messages && Array.isArray(messages) && messages.length > 0) {
       // Handle conversation-based optimization (for refinements)
       conversationMessages = messages;
     } else {
@@ -51,16 +51,6 @@ Make sure to follow this exact format with the headers and structure.`
       ];
     }
 
-    // Add user requirement if provided (for refinements)
-    if (userRequirement && userRequirement.trim()) {
-      conversationMessages.push({
-        role: 'user',
-        content: userRequirement.trim() 
-          ? `Please provide another avatar prompt variation. ${userRequirement.trim()}. Make sure to follow the exact output format with **RUNWAY PROMPT:** and **CHINESE TRANSLATION:** sections.`
-          : 'Please provide another avatar prompt variation, make it different from the previous ones but still focused on creating an excellent avatar. Make sure to follow the exact output format with **RUNWAY PROMPT:** and **CHINESE TRANSLATION:** sections.'
-      });
-    }
-
     const response = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages: conversationMessages,
@@ -84,6 +74,7 @@ Make sure to follow this exact format with the headers and structure.`
     const { runwayPrompt, chineseTranslation } = parsePromptResponse(fullResponse);
 
     return NextResponse.json({ 
+      success: true,
       optimizedPrompt: runwayPrompt,
       chineseTranslation: chineseTranslation,
       fullResponse: fullResponse

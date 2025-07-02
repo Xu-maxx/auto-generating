@@ -13,7 +13,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'HeyGen API key not configured' }, { status: 500 });
     }
 
-    console.log('Adding motion to avatar:', avatarId);
+    console.log('Adding expressive motion to avatar:', avatarId);
+
+    // Use expressive motion by default for more realistic and dynamic movement
+    const requestBody = {
+      id: avatarId,
+      motion_type: 'expressive'
+    };
 
     const response = await fetch('https://api.heygen.com/v2/photo_avatar/add_motion', {
       method: 'POST',
@@ -21,9 +27,7 @@ export async function POST(request: NextRequest) {
         'X-Api-Key': process.env.HEYGEN_API_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        avatar_id: avatarId
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     console.log('HeyGen add motion response status:', response.status, response.statusText);
@@ -46,11 +50,16 @@ export async function POST(request: NextRequest) {
     }
 
     const data = await response.json();
-    console.log('HeyGen add motion success:', data);
+    console.log('HeyGen add expressive motion success:', data);
+
+    // Extract motion avatar ID from HeyGen response structure
+    const motionAvatarId = data.data?.id;
+    console.log('Extracted motion avatar ID:', motionAvatarId);
 
     return NextResponse.json({ 
       success: true,
-      motionAvatarId: data.data?.avatar_id || data.avatar_id,
+      motionAvatarId: motionAvatarId,
+      motionType: 'expressive',
       data: data.data
     });
 

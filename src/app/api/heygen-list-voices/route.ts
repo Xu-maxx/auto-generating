@@ -7,7 +7,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'HeyGen API key not configured' }, { status: 500 });
     }
 
-    console.log('Fetching voices from HeyGen API...');
+    console.log('Fetching HeyGen voices...');
 
     const response = await fetch('https://api.heygen.com/v2/voices', {
       method: 'GET',
@@ -36,21 +36,32 @@ export async function GET(request: NextRequest) {
     }
 
     const data = await response.json();
-    console.log('HeyGen list voices success:', data);
+    console.log('HeyGen voices fetched successfully. Count:', data.data?.voices?.length || 0);
 
-    // Extract voices from nested structure
-    const voices = data.data?.voices || data.voices || [];
-    console.log('Extracted voices count:', voices.length);
+    // Extract useful voice information
+    const voices = data.data?.voices || [];
+    const voiceList = voices.map((voice: any) => ({
+      voice_id: voice.voice_id,
+      name: voice.name,
+      gender: voice.gender,
+      age: voice.age,
+      language: voice.language,
+      accent: voice.accent,
+      style: voice.style,
+      use_case: voice.use_case
+    }));
 
     return NextResponse.json({ 
       success: true,
-      voices: voices
+      voices: voiceList,
+      count: voiceList.length,
+      raw_data: data
     });
 
   } catch (error) {
-    console.error('Error listing voices:', error);
+    console.error('Error fetching HeyGen voices:', error);
     return NextResponse.json(
-      { error: 'Failed to list voices' },
+      { error: 'Failed to fetch HeyGen voices' },
       { status: 500 }
     );
   }

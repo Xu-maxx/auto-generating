@@ -2,18 +2,19 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(request: NextRequest) {
   try {
-    const { assetId, voiceId, text, title } = await request.json();
+    const { assetId, voiceId, text, title, audioAssetId } = await request.json();
     
     if (!assetId) {
       return NextResponse.json({ error: 'No asset ID provided' }, { status: 400 });
     }
 
-    if (!voiceId) {
-      return NextResponse.json({ error: 'No voice ID provided' }, { status: 400 });
+    // Check if we have audio asset or voice settings
+    if (!audioAssetId && !voiceId) {
+      return NextResponse.json({ error: 'No audio asset ID or voice ID provided' }, { status: 400 });
     }
 
-    if (!text) {
-      return NextResponse.json({ error: 'No text provided' }, { status: 400 });
+    if (!audioAssetId && !text) {
+      return NextResponse.json({ error: 'No audio asset ID or text provided' }, { status: 400 });
     }
 
     if (!process.env.HEYGEN_API_KEY) {
@@ -23,10 +24,29 @@ export async function POST(request: NextRequest) {
 
     console.log('Generating video with HeyGen API:', {
       assetId,
-      voiceId,
-      text: text.substring(0, 50) + '...',
+      voiceId: voiceId || 'Using audio asset',
+      audioAssetId: audioAssetId || 'Using text input',
+      text: text ? text.substring(0, 50) + '...' : 'Using audio input',
       title: title || 'Avatar Video'
     });
+
+    // Create voice settings based on whether we have audio asset or text
+    let voiceSettings;
+    if (audioAssetId) {
+      // Use AudioVoiceSettings when we have generated audio
+      voiceSettings = {
+        type: 'audio',
+        audio_asset_id: audioAssetId
+      };
+    } else {
+      // Fallback to TextVoiceSettings
+      voiceSettings = {
+        type: 'text',
+        voice_id: voiceId,
+        input_text: text,
+        speed: 1.0
+      };
+    }
 
     // Create video generation request
     const videoRequest = {
@@ -41,12 +61,7 @@ export async function POST(request: NextRequest) {
             talking_style: 'stable',
             expression: 'default'
           },
-          voice: {
-            type: 'text',
-            voice_id: voiceId,
-            input_text: text,
-            speed: 1.0
-          },
+          voice: voiceSettings,
           background: {
             type: 'color',
             value: '#f6f6fc'

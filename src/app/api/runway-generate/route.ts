@@ -158,7 +158,11 @@ export async function POST(request: NextRequest) {
     const pollInterval = 3000; // 3 seconds
     const startTime = Date.now();
 
+    console.log(`📊 Starting to poll ${taskIds.length} tasks for completion...`);
+
     while (completedImages.length < imageCount && (Date.now() - startTime) < maxWaitTime) {
+      console.log(`🔄 Poll cycle: ${completedImages.length}/${imageCount} completed, elapsed: ${Math.floor((Date.now() - startTime) / 1000)}s`);
+      
       for (let i = 0; i < taskIds.length; i++) {
         const taskId = taskIds[i];
         
@@ -166,6 +170,8 @@ export async function POST(request: NextRequest) {
           continue; // Skip already completed tasks
         }
 
+        console.log(`📋 Checking status for task ${taskId}...`);
+        
         const statusResponse = await fetch(`https://api.dev.runwayml.com/v1/tasks/${taskId}`, {
           headers: {
             'Authorization': `Bearer ${process.env.RUNWAY_API_KEY}`,
@@ -175,8 +181,10 @@ export async function POST(request: NextRequest) {
 
         if (statusResponse.ok) {
           const taskData = await statusResponse.json();
+          console.log(`📋 Task ${taskId} status: ${taskData.status}`);
           
           if (taskData.status === 'SUCCEEDED' && taskData.output) {
+            console.log(`✅ Task ${taskId} succeeded, downloading image...`);
             // Download and save the image
             const imageUrl = taskData.output[0]; // First output image
             const imageResponse = await fetch(imageUrl);
@@ -191,11 +199,13 @@ export async function POST(request: NextRequest) {
               try {
                 await mkdir(imagesDir, { recursive: true });
               } catch (err) {
-                // Directory might already exist
+                console.log('📁 Images directory already exists or creation failed:', err);
               }
               
               const filepath = join(imagesDir, filename);
               await writeFile(filepath, Buffer.from(imageBuffer));
+              
+              console.log(`💾 Image saved: ${filename} (${imageBuffer.byteLength} bytes)`);
               
               completedImages.push({
                 taskId,
@@ -203,17 +213,26 @@ export async function POST(request: NextRequest) {
                 url: `/generated-images/${filename}`,
                 prompt: promptText
               });
+            } else {
+              console.error(`❌ Failed to download image for task ${taskId}:`, imageResponse.status, imageResponse.statusText);
             }
           } else if (taskData.status === 'FAILED') {
-            console.error(`Task ${taskId} failed:`, taskData.failure);
+            console.error(`❌ Task ${taskId} failed:`, taskData.failure);
+          } else {
+            console.log(`⏳ Task ${taskId} still in progress (${taskData.status})`);
           }
+        } else {
+          console.error(`❌ Failed to check status for task ${taskId}:`, statusResponse.status, statusResponse.statusText);
         }
       }
 
       if (completedImages.length < imageCount) {
+        console.log(`⏸️ Waiting ${pollInterval}ms before next poll...`);
         await new Promise(resolve => setTimeout(resolve, pollInterval));
       }
     }
+
+    console.log(`🏁 Polling completed: ${completedImages.length}/${imageCount} images generated in ${Math.floor((Date.now() - startTime) / 1000)}s`);
 
     return NextResponse.json({ 
       success: true,
