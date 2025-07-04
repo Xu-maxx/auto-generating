@@ -171,10 +171,7 @@ tags
 String
 是
 标签名称，用逗号隔开，只支持中英文数字
-keyframesUrl
-String
-是
-缩略帧oss地址
+
   
 标签名称，用逗号隔开，只支持中英文数字
 请求body示例：
@@ -182,8 +179,7 @@ String
     "materialType": 3001,
     "materialFileType":1002,
     "productId":10255,
-    "tags":"肚子疼,小腹疼,中年,男人"，
-    "keyframesUrl": "keyframesUrl.jpeg"
+    "tags":"肚子疼,小腹疼,中年,男人"
 }
 2.3 返回字段
 成功响应示例：
@@ -234,6 +230,10 @@ msg
 String
 是
 失败原因
+keyframesUrl
+String
+是
+缩略帧oss地址
  
  
  
@@ -242,7 +242,8 @@ String
 {
     "materialId": 123456,
     "dealStatus":1,
-    "msg":""
+    "msg":""，
+    "keyframesUrl": "keyframesUrl.jpeg"
 }
 3.3 返回字段
 成功响应示例：

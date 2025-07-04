@@ -5,7 +5,6 @@ export interface MaterialSubmissionData {
   materialFileType: number; // 1002 - mp4, 1008 - mov（透明背景）, 2004 - png, 2002 - jpg
   productId: number; // Product ID instead of project ID
   tags: string; // 标签名称，用逗号隔开，只支持中英文数字
-  keyframesUrl: string; // 缩略帧oss地址 (required by API)
 }
 
 export interface MaterialSubmissionResponse {
@@ -20,6 +19,7 @@ export interface MaterialStatusUpdate {
   materialId: number; // 提交接口返回的materialId
   dealStatus: number; // 1-成功 2-失败
   msg: string; // 失败原因
+  keyframesUrl: string; // 缩略帧相对路径地址 (required in status update)
 }
 
 export interface MaterialStatusUpdateResponse {
@@ -130,11 +130,7 @@ export class MaterialSubmissionService {
         throw new Error('Not authenticated - no token available');
       }
 
-      console.log('🔍 DEBUG: Making status update request with data:', {
-        materialId: data.materialId,
-        dealStatus: data.dealStatus,
-        msg: data.msg
-      });
+      console.log('📤 Material status update request JSON:', JSON.stringify(data, null, 2));
 
       const response = await fetch('/api/material/status-update', {
         method: 'POST',

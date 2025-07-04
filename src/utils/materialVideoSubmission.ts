@@ -64,32 +64,17 @@ export class MaterialVideoSubmissionHelper {
       // Map material type correctly
       const materialTypeCode = materialType === 'avatar' ? 3001 : 4001; // 3001 for 口播 (avatar), 4001 for 空境 (material)
 
-      // Step 1: Extract and upload keyframe image to OSS
-      onProgress?.('Extracting and uploading keyframe image...');
-      
-      let keyframesUrl: string;
-      
-      try {
-        keyframesUrl = await this.extractAndUploadKeyframe(videoTask, materialType);
-        onProgress?.('Keyframe image uploaded successfully', { keyframesUrl });
-      } catch (keyframeError) {
-        const error = `Failed to upload keyframe image: ${keyframeError instanceof Error ? keyframeError.message : 'Unknown error'}`;
-        onError?.(error);
-        return { success: false, error };
-      }
-
-      // Prepare submission data with keyframesUrl
+      // Prepare submission data WITHOUT keyframesUrl (no longer needed in pre-submit)
       const submissionData: MaterialSubmissionData = {
         materialType: materialTypeCode,
         materialFileType,
         productId,
-        tags,
-        keyframesUrl
+        tags
       };
 
       onProgress?.('Submitting material information...', { submissionData });
 
-      // Step 2: Get file path and material ID
+      // Step 1: Get file path and material ID
       const submissionResult = await this.submissionService.preSubmitMaterial(submissionData);
       
       if (submissionResult.code !== 200) {
@@ -101,6 +86,27 @@ export class MaterialVideoSubmissionHelper {
       const { filePath, materialId } = submissionResult.data;
 
       onProgress?.('Received file path and material ID', { filePath, materialId });
+
+      // Step 2: Download keyframe image to server file path
+      onProgress?.('Downloading keyframe image to server...');
+      
+      let keyframeFilePath: string;
+      let keyframesUrl: string; // Relative path for status update
+      
+      try {
+        keyframeFilePath = `${filePath}.jpg`; // Append .jpg to video file path
+        await this.downloadKeyframeToPath(videoTask, keyframeFilePath, materialType);
+        
+        // Generate relative path for keyframesUrl (remove Windows drive letter, initial directory, and backslashes)
+        const relativePath = keyframeFilePath.replace(/^[A-Z]:\\[^\\]+\\/, '/').replace(/\\/g, '/');
+        keyframesUrl = relativePath;
+        
+        onProgress?.('Keyframe image downloaded successfully', { keyframeFilePath, keyframesUrl });
+      } catch (keyframeError) {
+        const error = `Failed to download keyframe image: ${keyframeError instanceof Error ? keyframeError.message : 'Unknown error'}`;
+        onError?.(error);
+        return { success: false, error };
+      }
 
       // Step 3: Place the video file at the specified path
       onProgress?.('Placing video file...', { filePath, sourceFile: videoTask.relativePath || videoTask.localPath || videoTask.videoUrl });
@@ -125,12 +131,13 @@ export class MaterialVideoSubmissionHelper {
 
         onProgress?.('Video file placed successfully at target path');
 
-        // Step 4: Update material status as success
+        // Step 4: Update material status as success WITH keyframesUrl
         onProgress?.('Updating material status to success...');
         const statusResult = await this.submissionService.updateMaterialStatus({
           materialId,
           dealStatus: 1, // Success
-          msg: '' // Empty message for success
+          msg: '', // Empty message for success
+          keyframesUrl // Include relative path for keyframes
         });
 
         if (statusResult.code !== 200) {
@@ -157,7 +164,8 @@ export class MaterialVideoSubmissionHelper {
           await this.submissionService.updateMaterialStatus({
             materialId,
             dealStatus: 2, // Failure
-            msg: `File placement failed: ${errorMessage}`
+            msg: `File placement failed: ${errorMessage}`,
+            keyframesUrl // Still include keyframes URL even for failure
           });
         } catch (statusError) {
           console.error('Failed to report material failure:', statusError);
@@ -176,29 +184,27 @@ export class MaterialVideoSubmissionHelper {
   }
 
   /**
-   * Extract keyframe image from video task and upload to OSS
+   * Download keyframe image from video task to server file path
    */
-  private async extractAndUploadKeyframe(
+  private async downloadKeyframeToPath(
     videoTask: VideoGenerationTask,
+    targetPath: string,
     materialType: 'avatar' | 'material'
-  ): Promise<string> {
+  ): Promise<void> {
     try {
       // Find the best available image source
       let imageUrl: string | null = null;
-      let imageName = `${materialType}-keyframe-${Date.now()}`;
       let imageSource = 'unknown';
 
       // Priority order: imageUrl (source image) -> previewUrl -> video frame extraction
       if (videoTask.imageUrl) {
         // Use the original source image (highest priority for material videos)
         imageUrl = videoTask.imageUrl;
-        imageName = `${materialType}-source-${videoTask.taskId || Date.now()}`;
         imageSource = 'source image (imageUrl)';
         console.log('📸 Using source imageUrl for keyframe:', imageUrl);
       } else if (videoTask.previewUrl) {
         // Use preview/thumbnail image as fallback
         imageUrl = videoTask.previewUrl;
-        imageName = `${materialType}-preview-${videoTask.taskId || Date.now()}`;
         imageSource = 'preview image (previewUrl)';
         console.log('📸 Using previewUrl for keyframe:', imageUrl);
       } else {
@@ -211,9 +217,9 @@ export class MaterialVideoSubmissionHelper {
         }
       }
 
-      console.log('📸 Extracting keyframe for material submission:', {
+      console.log('📸 Downloading keyframe for material submission:', {
         imageUrl,
-        imageName,
+        targetPath,
         imageSource,
         materialType,
         taskId: videoTask.taskId,
@@ -223,123 +229,38 @@ export class MaterialVideoSubmissionHelper {
         sourceImageName: videoTask.imageName // Original filename for debugging
       });
 
-      // Check if this is an external URL that might cause CORS issues
-      const isExternalUrl = imageUrl.startsWith('http://') || imageUrl.startsWith('https://');
-      const isLocalUrl = imageUrl.startsWith('/') || imageUrl.includes('localhost');
-      
-      let imageBlob: Blob;
-      let contentType: string;
-
-      if (isExternalUrl && !isLocalUrl) {
-        // Use proxy API for external URLs to avoid CORS issues
-        console.log('🔄 Using proxy API for external image URL');
-        
-        try {
-          const proxyResponse = await fetch('/api/proxy-image-download', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ imageUrl }),
-          });
-
-          if (!proxyResponse.ok) {
-            const errorData = await proxyResponse.json();
-            throw new Error(errorData.error || 'Proxy download failed');
-          }
-
-          const proxyResult = await proxyResponse.json();
-          
-          if (!proxyResult.success || !proxyResult.dataUrl) {
-            throw new Error('Proxy download failed - no data URL returned');
-          }
-
-          // Convert data URL back to blob
-          const response = await fetch(proxyResult.dataUrl);
-          imageBlob = await response.blob();
-          contentType = proxyResult.contentType || 'image/jpeg';
-
-          console.log('✅ Image downloaded via proxy:', {
-            originalSize: proxyResult.size,
-            blobSize: imageBlob.size,
-            contentType
-          });
-
-        } catch (proxyError) {
-          throw new Error(`Failed to download external image via proxy: ${proxyError instanceof Error ? proxyError.message : 'Unknown proxy error'}`);
-        }
-      } else {
-        // Direct download for local/same-origin URLs
-        console.log('📥 Direct download for local/same-origin URL');
-        
-        const imageResponse = await fetch(imageUrl);
-        
-        if (!imageResponse.ok) {
-          throw new Error(`Failed to download keyframe image from ${imageSource}: ${imageResponse.status} ${imageResponse.statusText}`);
-        }
-
-        imageBlob = await imageResponse.blob();
-        contentType = imageBlob.type || 'image/jpeg';
-      }
-
-      // Check if the response is actually an image
-      if (!contentType.startsWith('image/')) {
-        // If it's not an image (e.g., video), we need to handle it differently
-        if (contentType.startsWith('video/')) {
-          console.log(`📹 Downloaded content from ${imageSource} is a video, not an image`);
-          throw new Error(`Expected image but got video content from ${imageSource}. Please ensure video tasks have proper source image URLs.`);
-        } else {
-          throw new Error(`Unexpected content type from ${imageSource}: ${contentType}`);
-        }
-      }
-
-      // Determine file extension
-      const extension = contentType.split('/')[1] || 'jpg';
-      const filename = `${imageName}.${extension}`;
-
-      // Create File object for upload
-      const imageFile = new File([imageBlob], filename, { type: contentType });
-
-      console.log('📤 Uploading keyframe image to OSS:', {
-        filename,
-        size: imageFile.size,
-        type: imageFile.type,
-        source: imageSource
-      });
-
-      // Upload to OSS
-      const formData = new FormData();
-      formData.append('file', imageFile);
-      formData.append('originalFilename', filename);
-
-      const uploadResponse = await fetch('/api/upload-to-oss', {
+      // Use the new download keyframe API
+      const response = await fetch('/api/download-keyframe-image', {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          imageUrl,
+          targetPath
+        }),
       });
 
-      if (!uploadResponse.ok) {
-        const errorData = await uploadResponse.json();
-        throw new Error(errorData.error || 'Failed to upload keyframe to OSS');
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to download keyframe image');
       }
 
-      const uploadResult = await uploadResponse.json();
+      const result = await response.json();
       
-      if (!uploadResult.success || !uploadResult.url) {
-        throw new Error('OSS upload failed - no URL returned');
+      if (!result.success) {
+        throw new Error(result.error || 'Keyframe download failed');
       }
 
-      console.log('✅ Keyframe image uploaded to OSS:', {
-        originalUrl: imageUrl,
-        imageSource: imageSource,
-        ossUrl: uploadResult.url,
-        filename: uploadResult.filename,
-        size: uploadResult.size
+      console.log('✅ Keyframe image downloaded to server path:', {
+        targetPath,
+        fileSize: result.fileSize,
+        contentType: result.contentType,
+        imageSource
       });
-
-      return uploadResult.url;
 
     } catch (error) {
-      console.error('❌ Error extracting and uploading keyframe:', error);
+      console.error('❌ Error downloading keyframe to path:', error);
       throw error;
     }
   }
@@ -454,13 +375,15 @@ export class MaterialVideoSubmissionHelper {
    */
   async reportMaterialFailure(
     materialId: number,
-    errorMessage: string
+    errorMessage: string,
+    keyframesUrl: string
   ): Promise<boolean> {
     try {
       const result = await this.submissionService.updateMaterialStatus({
         materialId,
         dealStatus: 2, // Failure
-        msg: errorMessage
+        msg: errorMessage,
+        keyframesUrl
       });
 
       return result.code === 200;

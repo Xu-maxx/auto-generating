@@ -44,11 +44,11 @@ export async function POST(request: NextRequest) {
     console.log('📥 Material pre-submission API received JSON:', JSON.stringify(body, null, 2));
     
     // Validate required fields
-    const { materialType, materialFileType, productId, tags, keyframesUrl } = body;
+    const { materialType, materialFileType, productId, tags } = body;
     
-    if (!materialType || !materialFileType || !productId || !tags || !keyframesUrl) {
+    if (!materialType || !materialFileType || !productId || !tags) {
       return NextResponse.json(
-        { error: 'Missing required fields: materialType, materialFileType, productId, tags, keyframesUrl' },
+        { error: 'Missing required fields: materialType, materialFileType, productId, tags' },
         { status: 400 }
       );
     }
@@ -90,8 +90,7 @@ export async function POST(request: NextRequest) {
       materialType,
       materialFileType,
       productId,
-      tagsLength: tags.length,
-      hasKeyframesUrl: !!keyframesUrl
+      tagsLength: tags.length
     });
 
     // Use ApiClient like the products API does
@@ -112,8 +111,7 @@ export async function POST(request: NextRequest) {
         materialType,
         materialFileType,
         productId,
-        tags,
-        keyframesUrl
+        tags
       };
       
       const jsonBody = JSON.stringify(requestBody);
@@ -163,8 +161,7 @@ export async function POST(request: NextRequest) {
             materialType,
             materialFileType,
             productId,
-            tags,
-            keyframesUrl
+            tags
           };
           
           const jsonBody = JSON.stringify(requestBody);

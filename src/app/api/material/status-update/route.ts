@@ -24,12 +24,14 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
     
-    // Validate required fields
-    const { materialId, dealStatus, msg } = body;
+    console.log('📥 Material status update API received JSON:', JSON.stringify(body, null, 2));
     
-    if (!materialId || !dealStatus || msg === undefined) {
+    // Validate required fields
+    const { materialId, dealStatus, msg, keyframesUrl } = body;
+    
+    if (!materialId || !dealStatus || msg === undefined || !keyframesUrl) {
       return NextResponse.json(
-        { error: 'Missing required fields: materialId, dealStatus, msg' },
+        { error: 'Missing required fields: materialId, dealStatus, msg, keyframesUrl' },
         { status: 400 }
       );
     }
@@ -58,10 +60,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log('Material status update request:', {
+    // Validate keyframesUrl is a string
+    if (typeof keyframesUrl !== 'string' || !keyframesUrl.trim()) {
+      return NextResponse.json(
+        { error: 'keyframesUrl must be a non-empty string' },
+        { status: 400 }
+      );
+    }
+
+    console.log('🚀 Validated material status update request, proceeding to API call...', {
       materialId,
       dealStatus,
-      msg: msg.substring(0, 100) + (msg.length > 100 ? '...' : '')
+      hasKeyframesUrl: !!keyframesUrl
     });
 
     // Use ApiClient like the products API does
@@ -76,7 +86,8 @@ export async function POST(request: NextRequest) {
         body: JSON.stringify({
           materialId,
           dealStatus,
-          msg
+          msg,
+          keyframesUrl
         })
       }) as any; // Type assertion to handle the unknown type
 
