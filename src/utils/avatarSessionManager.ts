@@ -3,6 +3,7 @@ import { CombinedRatioResolutionOption, COMBINED_RATIO_RESOLUTION_OPTIONS } from
 
 const AVATAR_SESSION_PREFIX = 'avatar:session:';
 const AVATAR_SESSION_LIST_KEY = 'avatar:sessions:list';
+const PRODUCT_AVATAR_SESSION_PREFIX = 'avatar:product:sessions:'; // New: product-specific sessions
 
 export interface AvatarAsset {
   id: string;
@@ -72,11 +73,13 @@ export interface GeneratedVideo {
   text: string;
   createdAt: string;
   videoData?: any; // Store full video data from HeyGen
+  originalAvatarImageUrl?: string; // Store original avatar image URL for keyframe extraction
 }
 
 export interface AvatarSessionMetadata {
   id: string;
   name: string;
+  productId?: string; // New: product ID for session association
   createdAt: string;
   updatedAt: string;
   avatarCount: number;
@@ -87,6 +90,7 @@ export interface AvatarSessionMetadata {
 export interface AvatarSessionData {
   id: string;
   name: string;
+  productId?: string; // New: product ID for session association
   createdAt: string;
   updatedAt: string;
   
@@ -125,8 +129,8 @@ export class AvatarSessionManager {
     return `avatar_${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  // Create a new avatar session
-  static async createSession(name: string = 'Untitled Avatar Session'): Promise<AvatarSessionData> {
+  // Create a new avatar session (product-specific or global)
+  static async createSession(name: string = 'Untitled Avatar Session', productId?: string): Promise<AvatarSessionData> {
     const redis = await getRedisClient();
     const sessionId = this.generateSessionId();
     const now = new Date().toISOString();
@@ -134,6 +138,7 @@ export class AvatarSessionManager {
     const sessionData: AvatarSessionData = {
       id: sessionId,
       name: name,
+      productId: productId, // New: associate with product
       createdAt: now,
       updatedAt: now,
       
@@ -167,21 +172,36 @@ export class AvatarSessionManager {
     // Store session data
     await redis.hSet(`${AVATAR_SESSION_PREFIX}${sessionId}`, 'data', JSON.stringify(sessionData));
     
-    // Add to session list
+    // Add to appropriate session list(s)
+    if (productId) {
+      // Add to product-specific session list
+      await redis.sAdd(`${PRODUCT_AVATAR_SESSION_PREFIX}${productId}`, sessionId);
+    }
+    // Always add to global list for backward compatibility
     await redis.sAdd(AVATAR_SESSION_LIST_KEY, sessionId);
     
-    console.log('✅ AvatarSessionManager: Created new session:', sessionId);
+    console.log('✅ AvatarSessionManager: Created new session:', sessionId, productId ? `for product ${productId}` : '(global)');
     return sessionData;
   }
 
-  // Get all avatar sessions
-  static async getAllSessions(): Promise<AvatarSessionMetadata[]> {
+  // Get all avatar sessions (product-specific or global)
+  static async getAllSessions(productId?: string): Promise<AvatarSessionMetadata[]> {
     const redis = await getRedisClient();
     
     try {
-      console.log('🔍 AvatarSessionManager: Getting all sessions from Redis');
-      const sessionIds = await redis.sMembers(AVATAR_SESSION_LIST_KEY);
-      console.log('📋 AvatarSessionManager: Found session IDs:', sessionIds);
+      console.log('🔍 AvatarSessionManager: Getting sessions from Redis', productId ? `for product ${productId}` : '(global)');
+      
+      let sessionIds: string[] = [];
+      
+      if (productId) {
+        // Get product-specific sessions
+        sessionIds = await redis.sMembers(`${PRODUCT_AVATAR_SESSION_PREFIX}${productId}`);
+        console.log(`📋 AvatarSessionManager: Found ${sessionIds.length} sessions for product ${productId}:`, sessionIds);
+      } else {
+        // Get global sessions
+        sessionIds = await redis.sMembers(AVATAR_SESSION_LIST_KEY);
+        console.log('📋 AvatarSessionManager: Found global session IDs:', sessionIds);
+      }
       
       const sessions: AvatarSessionMetadata[] = [];
       
@@ -191,6 +211,12 @@ export class AvatarSessionManager {
           if (sessionDataStr) {
             const sessionData: AvatarSessionData = JSON.parse(sessionDataStr);
             
+            // Filter by product ID if specified
+            if (productId && sessionData.productId !== productId) {
+              console.log(`⏭️ Skipping session ${sessionId} - wrong product (expected: ${productId}, actual: ${sessionData.productId})`);
+              continue;
+            }
+            
             // Calculate counts based on actual data
             const avatarCount = (sessionData.uploadedAssets?.length || 0) + 
                                (sessionData.generatedAvatars?.length || 0) + 
@@ -199,27 +225,28 @@ export class AvatarSessionManager {
             
             const metadata: AvatarSessionMetadata = {
               id: sessionData.id,
-              name: sessionData.name || 'Untitled Avatar Session',
+              name: sessionData.name,
+              productId: sessionData.productId, // Include product ID in metadata
               createdAt: sessionData.createdAt,
               updatedAt: sessionData.updatedAt,
-              avatarCount: avatarCount,
-              videoCount: videoCount,
+              avatarCount,
+              videoCount,
               hasAvatarGroup: !!sessionData.avatarGroup,
             };
+            
             sessions.push(metadata);
           }
         } catch (error) {
-          console.error(`❌ AvatarSessionManager: Error loading session ${sessionId}:`, error);
+          console.error(`Error loading avatar session ${sessionId}:`, error);
         }
       }
       
       // Sort by updatedAt descending
-      sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-      
-      console.log('✅ AvatarSessionManager: Loaded sessions:', sessions.length);
-      return sessions;
+      const sortedSessions = sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      console.log(`✅ AvatarSessionManager: Returned ${sortedSessions.length} sessions`);
+      return sortedSessions;
     } catch (error) {
-      console.error('❌ AvatarSessionManager: Error loading all sessions:', error);
+      console.error('❌ AvatarSessionManager: Error getting sessions:', error);
       return [];
     }
   }
@@ -290,11 +317,15 @@ export class AvatarSessionManager {
       // Save updated data
       await redis.hSet(`${AVATAR_SESSION_PREFIX}${sessionData.id}`, 'data', JSON.stringify(sessionData));
       
-      // Ensure session is in the list
+      // Ensure session is in appropriate lists
       await redis.sAdd(AVATAR_SESSION_LIST_KEY, sessionData.id);
+      if (sessionData.productId) {
+        await redis.sAdd(`${PRODUCT_AVATAR_SESSION_PREFIX}${sessionData.productId}`, sessionData.id);
+      }
       
       console.log('✅ AvatarSessionManager: Session saved successfully:', {
         id: sessionData.id,
+        productId: sessionData.productId,
         avatarCount: sessionData.avatarCount,
         videoCount: sessionData.videoCount,
         hasAvatarGroup: !!sessionData.avatarGroup
@@ -323,11 +354,15 @@ export class AvatarSessionManager {
       // Save updated data
       await redis.hSet(`${AVATAR_SESSION_PREFIX}${sessionData.id}`, 'data', JSON.stringify(sessionData));
       
-      // Ensure session is in the list
+      // Ensure session is in appropriate lists
       await redis.sAdd(AVATAR_SESSION_LIST_KEY, sessionData.id);
+      if (sessionData.productId) {
+        await redis.sAdd(`${PRODUCT_AVATAR_SESSION_PREFIX}${sessionData.productId}`, sessionData.id);
+      }
       
       console.log('✅ AvatarSessionManager: Complete session state saved:', {
         id: sessionData.id,
+        productId: sessionData.productId,
         avatarCount: sessionData.avatarCount,
         videoCount: sessionData.videoCount,
         hasAvatarGroup: !!sessionData.avatarGroup,
@@ -404,9 +439,21 @@ export class AvatarSessionManager {
     const redis = await getRedisClient();
     
     try {
+      // Get session data to find product ID before deletion
+      const sessionData = await this.getSession(sessionId);
+      
+      // Delete session data
       await redis.del(`${AVATAR_SESSION_PREFIX}${sessionId}`);
+      
+      // Remove from global list
       await redis.sRem(AVATAR_SESSION_LIST_KEY, sessionId);
-      console.log('✅ AvatarSessionManager: Session deleted:', sessionId);
+      
+      // Remove from product-specific list if applicable
+      if (sessionData?.productId) {
+        await redis.sRem(`${PRODUCT_AVATAR_SESSION_PREFIX}${sessionData.productId}`, sessionId);
+      }
+      
+      console.log('✅ AvatarSessionManager: Session deleted:', sessionId, sessionData?.productId ? `from product ${sessionData.productId}` : '(global)');
     } catch (error) {
       console.error(`❌ AvatarSessionManager: Error deleting session ${sessionId}:`, error);
       throw error;

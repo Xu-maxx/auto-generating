@@ -17,7 +17,10 @@ export async function POST(request: NextRequest) {
     console.log('Runway API request:', { 
       promptText: promptText?.substring(0, 100), 
       imageCount,
-      referenceImagesCount: referenceImages.length 
+      referenceImagesCount: referenceImages.length,
+      aspectRatio,
+      resolution,
+      resolutionType: typeof resolution
     });
 
     if (!promptText) {
@@ -37,10 +40,23 @@ export async function POST(request: NextRequest) {
     for (let i = 0; i < imageCount; i++) {
       console.log(`Creating task ${i + 1}/${imageCount}`);
       
+      // Convert the ratio with better error handling
+      let runwayRatio;
+      try {
+        runwayRatio = toRunwayRatio(aspectRatio, resolution);
+        console.log(`Converted ratio for task ${i + 1}:`, { aspectRatio, resolution, runwayRatio });
+      } catch (ratioError) {
+        console.error('Error converting ratio:', ratioError);
+        return NextResponse.json({ 
+          error: 'Invalid aspect ratio or resolution format',
+          details: { aspectRatio, resolution, error: ratioError instanceof Error ? ratioError.message : 'Unknown error' }
+        }, { status: 400 });
+      }
+      
       // Build request body with reference images if provided
       const requestBody: any = {
         promptText: promptText,
-        ratio: toRunwayRatio(aspectRatio, resolution),
+        ratio: runwayRatio,
         model: 'gen4_image',
         seed: Math.floor(Math.random() * 4294967295), // Random seed for variation
       };
@@ -90,6 +106,14 @@ export async function POST(request: NextRequest) {
           console.warn('No valid reference images found, proceeding without reference images');
         }
       }
+      
+      console.log(`Task ${i + 1} request body:`, {
+        promptText: requestBody.promptText?.substring(0, 100) + '...',
+        ratio: requestBody.ratio,
+        model: requestBody.model,
+        seed: requestBody.seed,
+        referenceImagesCount: requestBody.referenceImages?.length || 0
+      });
       
       const response = await fetch('https://api.dev.runwayml.com/v1/text_to_image', {
         method: 'POST',

@@ -3,49 +3,51 @@ import OpenAI from 'openai';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  timeout: 30000, // 30 seconds timeout
 });
 
 export async function POST(request: NextRequest) {
   try {
+    // Check if API key is configured
+    if (!process.env.OPENAI_API_KEY) {
+      console.error('❌ OpenAI API key not configured');
+      return NextResponse.json({ error: 'OpenAI API key not configured' }, { status: 500 });
+    }
+
     const { description, messages } = await request.json();
 
     if (!description && (!messages || messages.length === 0)) {
       return NextResponse.json({ error: 'No description or messages provided' }, { status: 400 });
     }
 
-    // System prompt that defines the response format
+    // Shorter, more focused system prompt
     const systemPrompt = {
       role: 'system',
-      content: `You are an expert prompt engineer for AI image generation, specifically for creating avatars and portraits. Your task is to transform a simple description into a detailed, optimized prompt that will generate high-quality avatar images.
+      content: `You are an expert prompt engineer for AI image generation. Transform user descriptions into detailed avatar prompts.
 
-Guidelines for avatar prompts:
-1. Focus on facial features, expression, and upper body/portrait composition
-2. Include lighting details (soft lighting, studio lighting, natural lighting)
-3. Specify image quality terms (high resolution, detailed, professional)
-4. Include appropriate background (simple, blurred, studio, neutral)
-5. Mention camera/photography terms for realism (portrait photography, headshot)
-6. Avoid overly complex scenes - focus on the person
-7. Include style references if appropriate (photorealistic, professional headshot, etc.)
+Guidelines:
+- Focus on facial features, expression, upper body
+- Include lighting (soft, studio, natural)
+- Add quality terms (high resolution, detailed, professional)
+- Use simple backgrounds (blurred, studio, neutral)
+- Include photography terms (portrait photography, headshot)
+- Make it photorealistic
 
-Transform the user's description into a comprehensive prompt that will generate an excellent avatar image. You need to output the response in the following structure:
+Format your response exactly as:
 
 **RUNWAY PROMPT:**
-[The runway prompt in English]
+[detailed prompt in English]
 
 **CHINESE TRANSLATION:**
-[The Chinese translation of the runway prompt]
-
-Make sure to follow this exact format with the headers and structure.`
+[Chinese translation of the prompt]`
     };
 
     let conversationMessages;
 
     if (messages && Array.isArray(messages) && messages.length > 0) {
       // Handle conversation-based optimization (for refinements)
-      // Always include the system prompt to ensure proper formatting
       conversationMessages = [systemPrompt, ...messages];
       
-      // If there's a new description, add it as the latest user message
       if (description) {
         conversationMessages.push({
           role: 'user',
@@ -69,14 +71,60 @@ Make sure to follow this exact format with the headers and structure.`
       lastUserMessage: conversationMessages[conversationMessages.length - 1]?.content?.substring(0, 100) + '...'
     });
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: conversationMessages,
-      max_tokens: 400,
-      temperature: 0.7,
-    });
+    // Improved retry logic with model fallback
+    let response;
+    let retryCount = 0;
+    const maxRetries = 3;
+
+    while (retryCount < maxRetries) {
+      try {
+        console.log(`🔄 OpenAI API call attempt ${retryCount + 1}/${maxRetries}`);
+        
+        // Use different models based on retry count
+        const modelToUse = retryCount === 0 ? 'gpt-4o-mini' : 'gpt-3.5-turbo';
+        
+        response = await openai.chat.completions.create({
+          model: modelToUse,
+          messages: conversationMessages, 
+          temperature: 0.7,
+          max_tokens: 400,
+        }, {
+          timeout: 20000, // 20 seconds timeout per request
+        });
+
+        console.log('✅ OpenAI API call successful');
+        break; // Success, exit retry loop
+        
+      } catch (apiError: any) {
+        retryCount++;
+        console.error(`❌ OpenAI API call failed (attempt ${retryCount}/${maxRetries}):`, {
+          error: apiError.message,
+          code: apiError.code,
+          type: apiError.type,
+          status: apiError.status
+        });
+
+        if (retryCount >= maxRetries) {
+          // If all retries failed, throw the error
+          throw apiError;
+        }
+
+        // Wait before retry (exponential backoff)
+        const waitTime = Math.min(Math.pow(2, retryCount) * 1000, 5000); // 2s, 4s, 5s max
+        console.log(`⏳ Waiting ${waitTime}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
+    }
+
+    if (!response) {
+      throw new Error('Failed to get response from OpenAI after retries');
+    }
 
     const fullResponse = response.choices[0]?.message?.content?.trim() || '';
+    
+    if (!fullResponse) {
+      throw new Error('Empty response from OpenAI');
+    }
     
     console.log('🤖 OpenAI raw response:', fullResponse.substring(0, 200) + '...');
     
@@ -108,10 +156,26 @@ Make sure to follow this exact format with the headers and structure.`
       chineseTranslation: chineseTranslation,
       fullResponse: fullResponse
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error optimizing avatar prompt:', error);
+    
+    // Return more specific error messages
+    let errorMessage = 'Failed to optimize prompt';
+    
+    if (error.code === 'insufficient_quota') {
+      errorMessage = 'OpenAI API quota exceeded. Please check your billing.';
+    } else if (error.code === 'rate_limit_exceeded') {
+      errorMessage = 'OpenAI API rate limit exceeded. Please try again later.';
+    } else if (error.code === 'invalid_api_key') {
+      errorMessage = 'Invalid OpenAI API key. Please check your configuration.';
+    } else if (error.message?.includes('timeout')) {
+      errorMessage = 'OpenAI API request timed out. Please try again.';
+    } else if (error.message?.includes('network')) {
+      errorMessage = 'Network error connecting to OpenAI. Please try again.';
+    }
+    
     return NextResponse.json(
-      { error: 'Failed to optimize prompt' },
+      { error: errorMessage },
       { status: 500 }
     );
   }

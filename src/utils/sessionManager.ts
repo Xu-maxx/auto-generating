@@ -4,12 +4,96 @@ import { ProjectManager } from './projectManager';
 
 const SESSION_PREFIX = 'session:';
 const SESSION_LIST_KEY = 'sessions:list';
+const PRODUCT_SESSIONS_PREFIX = 'product:sessions:';
 
 export class SessionManager {
   
   // Generate a unique session ID
   static generateSessionId(): string {
     return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  // Create a new session for a product
+  static async createSessionForProduct(name?: string, productId?: string): Promise<SessionData> {
+    const redis = await getRedisClient();
+    const sessionId = this.generateSessionId();
+    const now = new Date().toISOString();
+    
+    const sessionData: SessionData = {
+      id: sessionId,
+      projectId: productId || '', // Store product ID in projectId field for backward compatibility
+      name: name || 'Untitled',
+      createdAt: now,
+      updatedAt: now,
+      
+      // Form states
+      imageDataUrl: '',
+      videoPrompt: '',
+      folderName: '',
+      aspectRatio: '16:9',
+      
+      // Image generation settings
+      imageAspectRatio: '16:9',
+      imageResolution: {width: 1920, height: 1080},
+      
+      // Image states
+      selectedImages: [],
+      addedImages: [],
+      referenceImages: [],
+      
+      // Video states
+      videoTasks: [],
+      isGeneratingVideo: false,
+      
+      // Prompt generation states
+      prompts: [],
+      conversation: [],
+      userRequirement: '',
+    };
+
+    // Store session data
+    await redis.hSet(`${SESSION_PREFIX}${sessionId}`, 'data', JSON.stringify(sessionData));
+    
+    // Add to session list
+    await redis.sAdd(SESSION_LIST_KEY, sessionId);
+    
+    // If productId is provided, add session to product
+    if (productId) {
+      await redis.sAdd(`${PRODUCT_SESSIONS_PREFIX}${productId}`, sessionId);
+    }
+    
+    return sessionData;
+  }
+
+  // Get all sessions for a specific product
+  static async getSessionsByProduct(productId: string): Promise<SessionMetadata[]> {
+    const redis = await getRedisClient();
+    const sessionIds = await redis.sMembers(`${PRODUCT_SESSIONS_PREFIX}${productId}`);
+    
+    const sessions: SessionMetadata[] = [];
+    
+    for (const sessionId of sessionIds) {
+      try {
+        const sessionDataStr = await redis.hGet(`${SESSION_PREFIX}${sessionId}`, 'data');
+        if (sessionDataStr) {
+          const sessionData: SessionData = JSON.parse(sessionDataStr);
+          sessions.push({
+            id: sessionData.id,
+            projectId: sessionData.projectId,
+            name: sessionData.name,
+            createdAt: sessionData.createdAt,
+            updatedAt: sessionData.updatedAt,
+            imageCount: sessionData.addedImages.length,
+            videoCount: sessionData.videoTasks.filter(task => task.status === 'downloaded').length,
+          });
+        }
+      } catch (error) {
+        console.error(`Error loading session ${sessionId}:`, error);
+      }
+    }
+    
+    // Sort by updatedAt descending
+    return sessions.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   }
 
   // Create a new session
@@ -175,7 +259,7 @@ export class SessionManager {
         // If session doesn't exist, create default structure
         existingData = {
           id: sessionData.id,
-          projectId: sessionData.projectId || '', // Handle projectId for new sessions
+          projectId: sessionData.projectId || '', // Handle productId/projectId for new sessions
           name: 'Untitled',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -222,6 +306,12 @@ export class SessionManager {
       // Ensure session is in the list
       await redis.sAdd(SESSION_LIST_KEY, sessionData.id);
       
+      // For product-based sessions, ensure session is in the product's session list
+      if (updatedData.projectId && /^\d+$/.test(updatedData.projectId)) {
+        // This is a product ID (numeric)
+        await redis.sAdd(`${PRODUCT_SESSIONS_PREFIX}${updatedData.projectId}`, sessionData.id);
+      }
+      
     } catch (error) {
       console.error(`❌ SessionManager: Error saving session ${sessionData.id}:`, error);
       throw error;
@@ -233,12 +323,19 @@ export class SessionManager {
     const redis = await getRedisClient();
     
     try {
-      // Get session data to find projectId
+      // Get session data to find projectId/productId
       const sessionDataStr = await redis.hGet(`${SESSION_PREFIX}${sessionId}`, 'data');
       if (sessionDataStr) {
         const sessionData: SessionData = JSON.parse(sessionDataStr);
         if (sessionData.projectId) {
-          await ProjectManager.removeSessionFromProject(sessionData.projectId, sessionId);
+          // Check if this is a product ID (numeric) or project ID (starts with proj_)
+          if (/^\d+$/.test(sessionData.projectId)) {
+            // This is a product ID
+            await redis.sRem(`${PRODUCT_SESSIONS_PREFIX}${sessionData.projectId}`, sessionId);
+          } else {
+            // This is a project ID
+            await ProjectManager.removeSessionFromProject(sessionData.projectId, sessionId);
+          }
         }
       }
       

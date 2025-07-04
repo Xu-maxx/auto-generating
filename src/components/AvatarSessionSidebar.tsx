@@ -9,6 +9,7 @@ interface AvatarSessionSidebarProps {
   onNewSession: () => void;
   isCollapsed: boolean;
   onToggleCollapse: () => void;
+  productId?: string;
 }
 
 export default function AvatarSessionSidebar({
@@ -17,6 +18,7 @@ export default function AvatarSessionSidebar({
   onNewSession,
   isCollapsed,
   onToggleCollapse,
+  productId,
 }: AvatarSessionSidebarProps) {
   const [sessions, setSessions] = useState<AvatarSessionMetadata[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,10 +53,12 @@ export default function AvatarSessionSidebar({
 
   const loadSessions = async () => {
     try {
-      const response = await fetch('/api/avatar-session');
+      const url = productId ? `/api/avatar-session?productId=${productId}` : '/api/avatar-session';
+      const response = await fetch(url);
       const data = await response.json();
       if (data.success) {
         setSessions(data.sessions);
+        console.log(`📋 Loaded ${data.sessions.length} sessions`, productId ? `for product ${productId}` : '(global)');
       }
     } catch (error) {
       console.error('Error loading avatar sessions:', error);
@@ -65,10 +69,11 @@ export default function AvatarSessionSidebar({
 
   const handleCreateSession = async () => {
     try {
+      const sessionName = productId ? `Product ${productId} Avatar Session` : 'New Avatar Session';
       const response = await fetch('/api/avatar-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'create', name: 'New Avatar Session' }),
+        body: JSON.stringify({ action: 'create', name: sessionName, productId }),
       });
       const data = await response.json();
       if (data.success) {
@@ -214,7 +219,16 @@ export default function AvatarSessionSidebar({
       <div className="p-4 border-b border-gray-200 bg-white">
         <div className="flex items-center justify-between">
           {!isCollapsed && (
-            <h2 className="text-lg font-semibold text-gray-800">Avatar Sessions</h2>
+            <div>
+              <h2 className="text-lg font-semibold text-gray-800">
+                {productId ? `Product ${productId} Sessions` : 'Avatar Sessions'}
+              </h2>
+              {productId && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Sessions for this product only
+                </p>
+              )}
+            </div>
           )}
           <div className="flex gap-2">
             <button

@@ -1,5 +1,6 @@
 export interface AvatarTestClientProps {
   dict: any;
+  searchParams?: { [key: string]: string | string[] | undefined };
 }
 
 export interface GeneratedAvatar {
@@ -48,4 +49,5 @@ export interface GeneratedVideo {
   text: string;
   createdAt: string;
   videoData?: any; // Store full video data from HeyGen
+  originalAvatarImageUrl?: string; // Store original avatar image URL for keyframe extraction
 } 

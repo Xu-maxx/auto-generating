@@ -1,11 +1,19 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { SessionData } from '@/types/session';
+import ApiClient from '@/utils/apiClient';
 
 export function useProjectSession(projectId: string) {
   const [currentSession, setCurrentSession] = useState<SessionData | null>(null);
   const [loading, setLoading] = useState(true);
   const autoSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pendingUpdatesRef = useRef<Partial<SessionData>>({});
+
+  // Get authentication headers
+  const getAuthHeaders = useCallback((): Record<string, string> => {
+    const apiClient = ApiClient.getInstance();
+    const token = apiClient.getToken();
+    return token ? { 'Authorization': `Bearer ${token}` } : {};
+  }, []);
 
   // Load session from API
   const loadSession = useCallback(async (sessionId: string) => {
@@ -39,10 +47,20 @@ export function useProjectSession(projectId: string) {
   // Create new session in project
   const createSession = useCallback(async (name?: string) => {
     try {
-      console.log('🆕 Creating new session in project:', projectId, name || 'Untitled');
-      const response = await fetch(`/api/projects/${projectId}/sessions`, {
+      console.log('🆕 Creating new session for product:', projectId, name || 'Untitled');
+      
+      // Check if projectId is numeric (product ID) or starts with proj_ (project ID)
+      const isProductId = /^\d+$/.test(projectId);
+      const endpoint = isProductId ? `/api/products/${projectId}/sessions` : `/api/projects/${projectId}/sessions`;
+      
+      const headers = { 'Content-Type': 'application/json' };
+      if (isProductId) {
+        Object.assign(headers, getAuthHeaders());
+      }
+      
+      const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ name: name || 'Untitled' }),
       });
       const data = await response.json();
@@ -55,7 +73,7 @@ export function useProjectSession(projectId: string) {
       console.error('❌ Error creating session:', error);
     }
     return null;
-  }, [projectId]);
+  }, [projectId, getAuthHeaders]);
 
   // Auto-save with debouncing
   const autoSave = useCallback((updates: Partial<SessionData>) => {
@@ -181,15 +199,21 @@ export function useProjectSession(projectId: string) {
       if (!projectId) return;
       
       try {
-        // Try to get existing sessions for this project
-        const response = await fetch(`/api/projects/${projectId}/sessions`);
+        // Check if projectId is numeric (product ID) or starts with proj_ (project ID)
+        const isProductId = /^\d+$/.test(projectId);
+        const endpoint = isProductId ? `/api/products/${projectId}/sessions` : `/api/projects/${projectId}/sessions`;
+        
+        const headers = isProductId ? getAuthHeaders() : undefined;
+        
+        // Try to get existing sessions for this project/product
+        const response = await fetch(endpoint, headers ? { headers } : {});
         const data = await response.json();
         
         if (data.success && data.sessions.length > 0) {
           // Load the most recent session
           await loadSession(data.sessions[0].id);
         } else {
-          // Create first session for this project
+          // Create first session for this project/product
           await createSession();
         }
       } catch (error) {
@@ -200,7 +224,7 @@ export function useProjectSession(projectId: string) {
     };
 
     initializeSession();
-  }, [projectId, loadSession, createSession]);
+  }, [projectId, loadSession, createSession, getAuthHeaders]);
 
   // Cleanup timeout on unmount
   useEffect(() => {

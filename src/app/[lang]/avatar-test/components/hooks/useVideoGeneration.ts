@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { GeneratedVideo, ExistingImage, GeneratedAvatar } from '../types';
 import { AvatarSessionData, AvatarAsset } from '@/utils/avatarSessionManager';
 
@@ -17,7 +17,7 @@ export const useVideoGeneration = () => {
   const statusCheckIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const [statusCheckIntervals, setStatusCheckIntervals] = useState<Map<string, NodeJS.Timeout>>(new Map());
 
-  const checkVideoStatus = async (videoId: string) => {
+  const checkVideoStatus = useCallback(async (videoId: string) => {
     try {
       const response = await fetch(`/api/heygen-video-status?videoId=${videoId}`);
       const data = await response.json();
@@ -65,21 +65,21 @@ export const useVideoGeneration = () => {
     } catch (error) {
       console.error('Error checking video status:', error);
     }
-  };
+  }, []);
 
-  const startVideoStatusInterval = (videoId: string) => {
+  const startVideoStatusInterval = useCallback((videoId: string) => {
     console.log(`🚀 Starting video status polling for ${videoId}`);
     
     const interval = setInterval(() => {
       checkVideoStatus(videoId);
     }, 5000); // Check every 5 seconds
     
-    // Store in both ref and state
+    // Store in both ref and state for consistency
     statusCheckIntervalsRef.current.set(videoId, interval);
     setStatusCheckIntervals(prev => new Map(prev.set(videoId, interval)));
-  };
+  }, [checkVideoStatus]);
 
-  const clearVideoStatusInterval = (videoId: string) => {
+  const clearVideoStatusInterval = useCallback((videoId: string) => {
     console.log(`🛑 Clearing video status interval for ${videoId}`);
     
     // Clear from ref (primary source)
@@ -103,9 +103,17 @@ export const useVideoGeneration = () => {
       }
       return newMap;
     });
-  };
+  }, []);
 
-  const clearAllVideoStatusIntervals = () => {
+  const addVideoStatusInterval = useCallback((videoId: string, interval: NodeJS.Timeout) => {
+    console.log(`📝 Adding video status interval for ${videoId}`);
+    
+    // Store in both ref and state for consistency
+    statusCheckIntervalsRef.current.set(videoId, interval);
+    setStatusCheckIntervals(prev => new Map(prev.set(videoId, interval)));
+  }, []);
+
+  const clearAllVideoStatusIntervals = useCallback(() => {
     console.log(`🛑 Clearing all video status intervals (${statusCheckIntervalsRef.current.size} active)`);
     
     // Clear from ref (primary source)
@@ -115,14 +123,17 @@ export const useVideoGeneration = () => {
     });
     statusCheckIntervalsRef.current.clear();
     
-    // Also clear from state
-    statusCheckIntervals.forEach((interval) => {
-      clearInterval(interval);
+    // Also clear from state using the current value
+    setStatusCheckIntervals(prev => {
+      prev.forEach((interval, videoId) => {
+        clearInterval(interval);
+        console.log(`✅ Also cleared interval from state for ${videoId}`);
+      });
+      return new Map();
     });
-    setStatusCheckIntervals(new Map());
-  };
+  }, []);
 
-  const waitForAvatarsCompletion = async (avatars: any[], maxWaitTime = 600000) => {
+  const waitForAvatarsCompletion = useCallback(async (avatars: any[], maxWaitTime = 600000) => {
     const startTime = Date.now();
     
     while (Date.now() - startTime < maxWaitTime) {
@@ -170,7 +181,7 @@ export const useVideoGeneration = () => {
     }
     
     throw new Error('Timeout waiting for avatars to complete processing');
-  };
+  }, []);
 
   return {
     isGeneratingVideo,
@@ -196,6 +207,7 @@ export const useVideoGeneration = () => {
     checkVideoStatus,
     startVideoStatusInterval,
     clearVideoStatusInterval,
+    addVideoStatusInterval,
     clearAllVideoStatusIntervals,
     waitForAvatarsCompletion
   };

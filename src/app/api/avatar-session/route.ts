@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AvatarSessionManager, AvatarSessionData } from '@/utils/avatarSessionManager';
 
-// GET all avatar sessions
+// GET all avatar sessions (product-specific or global)
 export async function GET(request: NextRequest) {
   try {
-    const sessions = await AvatarSessionManager.getAllSessions();
+    const { searchParams } = new URL(request.url);
+    const productId = searchParams.get('productId') || undefined;
+    
+    const sessions = await AvatarSessionManager.getAllSessions(productId);
     return NextResponse.json({ success: true, sessions });
   } catch (error) {
     console.error('Error getting avatar sessions:', error);
@@ -17,12 +20,12 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const { action, sessionId, sessionData, assetId, motionAvatarId, name } = await request.json();
+    const { action, sessionId, sessionData, assetId, motionAvatarId, name, productId } = await request.json();
 
     switch (action) {
       case 'create':
         try {
-          const newSession = await AvatarSessionManager.createSession(name);
+          const newSession = await AvatarSessionManager.createSession(name, productId);
           return NextResponse.json({ 
             success: true, 
             session: newSession 

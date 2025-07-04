@@ -6,6 +6,7 @@ import FileUpload from '@/components/FileUpload';
 import PromptGenerator from '@/components/PromptGenerator';
 import SessionSidebar from '@/components/SessionSidebar';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
+import MaterialSubmissionButton from '@/components/MaterialSubmissionButton';
 import { useProjectSession } from '@/hooks/useProjectSession';
 import { GeneratedImage, VideoGenerationTask, PromptWithSpec, ConversationMessage, ReferenceImage } from '@/types/session';
 import { ProjectData } from '@/types/project';
@@ -15,21 +16,22 @@ import {
   getBestResolution
 } from '@/utils/imageRatioUtils';
 import { extractVideoFrame } from '@/utils/videoFrameExtractor';
+import ApiClient from '@/utils/apiClient';
 
-interface ProjectPageClientProps {
+interface MaterialPageClientProps {
   params: Promise<{ lang: string; id: string }>;
   dict: any;
 }
 
-export default function ProjectPageClient({ params, dict }: ProjectPageClientProps) {
+export default function MaterialPageClient({ params, dict }: MaterialPageClientProps) {
   const router = useRouter();
   const [locale, setLocale] = useState('en');
-  const [projectId, setProjectId] = useState('');
+  const [productId, setProductId] = useState('');
   
-  const [project, setProject] = useState<ProjectData | null>(null);
-  const [projectLoading, setProjectLoading] = useState(true);
+  const [product, setProduct] = useState<ProjectData | null>(null);
+  const [productLoading, setProductLoading] = useState(true);
   
-  const { currentSession, loading: sessionLoading, loadSession, createSession, updateSession } = useProjectSession(projectId);
+  const { currentSession, loading: sessionLoading, loadSession, createSession, updateSession } = useProjectSession(productId);
   
   // Local state for non-persistent UI states
   const [previewImage, setPreviewImage] = useState<GeneratedImage | null>(null);
@@ -37,7 +39,6 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
   const [pollingTasks, setPollingTasks] = useState<Set<string>>(new Set());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
-  const [isStoringVideos, setIsStoringVideos] = useState(false);
   
   // Ref to store current video tasks to avoid stale state issues
   const currentVideoTasksRef = useRef<VideoGenerationTask[]>([]);
@@ -45,43 +46,80 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
   // Global state for parallel processing control
   const [isApiChannelOccupied, setIsApiChannelOccupied] = useState(false);
 
-  // Get locale and projectId from params
+  // Get locale and productId from params
   useEffect(() => {
     const getParams = async () => {
       const resolvedParams = await params;
       setLocale(resolvedParams.lang);
-      setProjectId(resolvedParams.id);
+      setProductId(resolvedParams.id);
     };
     getParams();
   }, [params]);
 
-  // Load project data
+  // Load product data
   useEffect(() => {
-    const loadProject = async () => {
-      if (!projectId) return;
+    const loadProduct = async () => {
+      if (!productId) return;
       
       try {
-        setProjectLoading(true);
-        const response = await fetch(`/api/projects/${projectId}`);
+        setProductLoading(true);
+        
+        // Get token from ApiClient
+        const apiClient = ApiClient.getInstance();
+        const token = apiClient.getToken();
+        
+        if (!token) {
+          router.push(`/${locale}/login`);
+          return;
+        }
+        
+        // Since we're working with product IDs directly, we can load the product info
+        // and create a virtual project object for UI purposes
+        const response = await fetch(`/api/products?pageSize=1000`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
         const data = await response.json();
+        
         if (data.success) {
-          setProject(data.project);
+          const foundProduct = data.products.find((p: any) => p.id === parseInt(productId));
+          if (foundProduct) {
+            // Create a virtual project object from product data
+            const virtualProject: ProjectData = {
+              id: productId,
+              name: `${foundProduct.productName} - Material Video`,
+              style: `Material video project for ${foundProduct.productName}`,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              sessionCount: 0
+            };
+            setProduct(virtualProject);
+          } else {
+            console.error('Product not found:', productId);
+            router.push(`/${locale}`);
+          }
         } else {
-          console.error('Failed to load project:', data.error);
-          router.push(`/${locale}`); // Redirect to homepage with locale
+          console.error('Error loading products:', data.error);
+          if (data.error === 'Not authenticated') {
+            apiClient.clearToken();
+            router.push(`/${locale}/login`);
+          } else {
+            router.push(`/${locale}`);
+          }
         }
       } catch (error) {
-        console.error('Error loading project:', error);
-        router.push(`/${locale}`); // Redirect to homepage with locale
+        console.error('Error loading product:', error);
+        router.push(`/${locale}`);
       } finally {
-        setProjectLoading(false);
+        setProductLoading(false);
       }
     };
 
-    if (projectId) {
-      loadProject();
+    if (productId) {
+      loadProduct();
     }
-  }, [projectId, router, locale]);
+  }, [productId, router, locale]);
 
   // Session-based state getters
   const imageDataUrl = currentSession?.imageDataUrl || '';
@@ -717,120 +755,6 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
     }
   };
 
-  const storeSelectedVideos = async () => {
-    console.log('🏪 === STORE SELECTED VIDEOS START ===');
-    console.log('🏪 Initial state:', {
-      selectedVideosSize: selectedVideos.size,
-      videoTasksCount: videoTasks.length,
-      addedImagesCount: addedImages.length,
-      folderName: folderName,
-      currentSessionId: currentSession?.id
-    });
-    
-    if (selectedVideos.size === 0) {
-      alert('Please select videos to store');
-      return;
-    }
-
-    if (!folderName.trim()) {
-      alert('Please enter a folder name first');
-      return;
-    }
-
-    console.log('🏪 Selected video IDs:', Array.from(selectedVideos));
-    const selectedTasks = videoTasks.filter(task => selectedVideos.has(task.taskId || ''));
-    console.log('🏪 Selected tasks found:', {
-      count: selectedTasks.length,
-      tasks: selectedTasks.map(task => ({ taskId: task.taskId, imageName: task.imageName, status: task.status }))
-    });
-
-    setIsStoringVideos(true);
-    
-    try {
-      const response = await fetch('/api/store-videos', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          videos: selectedTasks.map(task => ({
-            taskId: task.taskId,
-            videoUrl: task.videoUrl,
-            localPath: task.localPath,
-            imageName: task.imageName,
-            relativePath: task.relativePath
-          })),
-          targetFolderPath: `downloads/${folderName}`,
-        }),
-      });
-
-      const result = await response.json();
-      console.log('🏪 Store API response:', result);
-      
-      if (result.success) {
-        console.log('🏪 Store API successful, preparing session updates...');
-        
-        // Calculate remaining data BEFORE updating session
-        const remainingTasks = videoTasks.filter(task => !selectedVideos.has(task.taskId || ''));
-        const remainingImages = addedImages.filter(image => 
-          !selectedTasks.some(task => task.imageName === image.filename)
-        );
-        
-        console.log('🏪 Calculated remaining data:', {
-          originalVideoTasks: videoTasks.length,
-          remainingTasks: remainingTasks.length,
-          originalAddedImages: addedImages.length,
-          remainingImages: remainingImages.length,
-          removedVideoTasks: videoTasks.length - remainingTasks.length,
-          removedImages: addedImages.length - remainingImages.length
-        });
-        
-        console.log('🏪 Remaining video tasks details:', remainingTasks.map(task => ({ 
-          taskId: task.taskId, 
-          imageName: task.imageName, 
-          status: task.status 
-        })));
-        
-        console.log('🏪 About to call updateSession...');
-        
-        // Update session with remaining data
-        updateSession({ 
-          videoTasks: remainingTasks,
-          addedImages: remainingImages 
-        });
-        
-        console.log('🏪 updateSession called, session should be updated now');
-        
-        // Clear selections
-        setSelectedVideos(new Set());
-        console.log('🏪 Cleared video selections');
-        
-        // Debug: Check session state after a delay to see if it persists
-        setTimeout(() => {
-          console.log('🏪 DELAYED CHECK - Session state after 3 seconds:', {
-            sessionId: currentSession?.id,
-            videoTasksCount: videoTasks.length,
-            videoTasksDetails: videoTasks.map(task => ({ 
-              taskId: task.taskId, 
-              imageName: task.imageName, 
-              status: task.status 
-            }))
-          });
-        }, 3000);
-        
-        alert(`Successfully stored ${selectedTasks.length} videos to "downloads/${folderName}" folder`);
-        console.log('🏪 === STORE SELECTED VIDEOS SUCCESS ===');
-      } else {
-        console.error('🏪 Store API failed:', result.error);
-        alert(`Failed to store videos: ${result.error}`);
-      }
-    } catch (error) {
-      console.error('🏪 Store operation error:', error);
-      alert('Error storing videos');
-    } finally {
-      setIsStoringVideos(false);
-      console.log('🏪 === STORE SELECTED VIDEOS END ===');
-    }
-  };
-
   const deleteSelectedVideos = async () => {
     if (selectedVideos.size === 0) {
       alert('Please select videos to delete');
@@ -1006,23 +930,23 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
   };
 
   // Loading screen while project or session is loading
-  if (projectLoading || sessionLoading) {
+  if (productLoading || sessionLoading) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">{dict.common.loading} {projectLoading ? dict.projectPage.loadingProject : dict.projectPage.loadingSession}</p>
+          <p className="text-gray-600">{dict.common.loading} {productLoading ? dict.projectPage.loadingProject : dict.projectPage.loadingSession}</p>
         </div>
       </div>
     );
   }
 
   // Error screen if project or session failed to load
-  if (!project || !currentSession) {
+  if (!product || !currentSession) {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="text-center">
-          <p className="text-gray-600 mb-4">{dict.projectPage.failedToLoad} {!project ? 'project' : 'session'}</p>
+          <p className="text-gray-600 mb-4">{dict.projectPage.failedToLoad} {!product ? 'project' : 'session'}</p>
           <button
             onClick={() => router.push(`/${locale}`)}
             className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 mr-2"
@@ -1058,8 +982,8 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
               </button>
               <div className="border-l h-6 border-gray-300"></div>
               <div>
-                <h1 className="text-xl font-semibold text-gray-900">{project.name}</h1>
-                <p className="text-sm text-gray-600">{dict.homepage.projectCard.style} {project.style}</p>
+                <h1 className="text-xl font-semibold text-gray-900">{product.name}</h1>
+                <p className="text-sm text-gray-600">{dict.homepage.projectCard.style} {product.style}</p>
               </div>
             </div>
             <div className="flex items-center space-x-4">
@@ -1076,7 +1000,7 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
       <div className="flex-1 flex">
         {/* Session Sidebar */}
         <SessionSidebar
-          projectId={projectId}
+          projectId={productId}
           currentSessionId={currentSession.id}
           onSessionSelect={handleSessionSelect}
           onNewSession={handleNewSession}
@@ -1138,7 +1062,7 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                       referenceImages={referenceImages}
                       onReferenceImagesChange={setReferenceImages}
                       updatePromptSession={updatePromptSession}
-                      projectStyle={project?.style}
+                      projectStyle={product?.style}
                       dict={dict}
                       imageAspectRatio={imageAspectRatio}
                       imageResolution={imageResolution}
@@ -1346,19 +1270,27 @@ export default function ProjectPageClient({ params, dict }: ProjectPageClientPro
                           </h5>
                           {selectedVideos.size > 0 && (
                             <div className="flex gap-2">
-                              <button
-                                onClick={storeSelectedVideos}
-                                disabled={isStoringVideos}
-                                className="px-3 py-1 bg-green-500 text-white rounded text-xs hover:bg-green-600 disabled:bg-gray-400"
-                              >
-                                {isStoringVideos ? 'Storing...' : `Store (${selectedVideos.size}) to "downloads/${folderName}"`}
-                              </button>
-                              <button
-                                onClick={deleteSelectedVideos}
-                                className="px-3 py-1 bg-red-500 text-white rounded text-xs hover:bg-red-600"
-                              >
-                                Delete ({selectedVideos.size})
-                              </button>
+                              <MaterialSubmissionButton
+                                videoTasks={videoTasks.filter(task => selectedVideos.has(task.taskId || '') && task.status === 'downloaded')}
+                                productId={parseInt(productId)}
+                                productName={product?.name || 'Unknown Product'}
+                                folderName={folderName}
+                                onSubmissionComplete={(results) => {
+                                  console.log('Material submission completed:', results);
+                                  // Clear selected videos after successful submission
+                                  setSelectedVideos(new Set());
+                                  
+                                  // Optional: Show success message
+                                  const successCount = results.filter(r => r.success).length;
+                                  if (successCount > 0) {
+                                    alert(`Successfully submitted ${successCount} videos as materials!`);
+                                  }
+                                }}
+                                onSubmissionError={(error) => {
+                                  console.error('Material submission error:', error);
+                                  alert(`Material submission failed: ${error}`);
+                                }}
+                              />
                             </div>
                           )}
                         </div>

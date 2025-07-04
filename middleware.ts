@@ -1,12 +1,9 @@
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 const locales = ['en', 'zh'];
-const defaultLocale = 'en';
 
-// Get the preferred locale from the request
-function getLocale(request: NextRequest): string {
-  // Check if locale is in the pathname
+function getLocale(request: NextRequest) {
+  // Check if there is any supported locale in the pathname
   const pathname = request.nextUrl.pathname;
   const pathnameLocale = locales.find(
     (locale) => pathname.startsWith(`/${locale}/`) || pathname === `/${locale}`
@@ -17,18 +14,22 @@ function getLocale(request: NextRequest): string {
   // Check Accept-Language header
   const acceptLanguage = request.headers.get('accept-language');
   if (acceptLanguage) {
-    // Simple language detection - check if Chinese is preferred
-    if (acceptLanguage.includes('zh')) return 'zh';
-    if (acceptLanguage.includes('en')) return 'en';
+    const preferredLocale = acceptLanguage
+      .split(',')
+      .map(lang => lang.trim().split(';')[0])
+      .find(lang => locales.includes(lang.split('-')[0]));
+    
+    if (preferredLocale) {
+      return preferredLocale.split('-')[0];
+    }
   }
 
-  return defaultLocale;
+  // Default to English
+  return 'en';
 }
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-
-  console.log('Middleware processing:', pathname);
 
   // Skip middleware for API routes, static files, and Next.js internals
   if (
@@ -37,7 +38,6 @@ export function middleware(request: NextRequest) {
     pathname.startsWith('/favicon') ||
     pathname.includes('.')
   ) {
-    console.log('Skipping middleware for:', pathname);
     return NextResponse.next();
   }
 
@@ -47,7 +47,6 @@ export function middleware(request: NextRequest) {
   );
 
   if (pathnameHasLocale) {
-    console.log('Path already has locale:', pathname);
     return NextResponse.next();
   }
 
@@ -56,17 +55,18 @@ export function middleware(request: NextRequest) {
   const newPath = pathname === '/' ? `/${locale}` : `/${locale}${pathname}`;
   const newUrl = new URL(newPath, request.url);
   
-  console.log('Redirecting from', pathname, 'to', newPath);
   return NextResponse.redirect(newUrl);
 }
 
 export const config = {
   matcher: [
-    // Match all requests except for the ones starting with:
-    // - api (API routes)
-    // - _next/static (static files)
-    // - _next/image (image optimization files)
-    // - favicon.ico (favicon file)
+    /*
+     * Match all request paths except for the ones starting with:
+     * - api (API routes)
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     */
     '/((?!api|_next/static|_next/image|favicon.ico).*)',
   ],
 }; 

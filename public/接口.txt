@@ -1,0 +1,303 @@
+HTTP 请求头需添加：
+ Header 名称	示例值	说明
+Authorization	Bearer eyJhbGciOiJIUzUxMiJ9.eyJleHAiOjE3NTExMDM0MTQsImxvZ2luX3VzZXJfa2V5IjoiM2Q5ZDE5YzEtNTZlYy00MmEzLThjYTQtYWMyZmE0MzE2ZWRjIn0.9DGgPMEq7Rh0mO6Vylo8zHVZt0Czn5B2Nds92mFgsU-55Msoosd_m7YIT43kiXuI1l0ohlXwLpT1w3tWsjyoOA	登录成功后返回的 JWT Token，用于认证
+示例：
+GET /product/product/list?pageNum=1&pageSize=10 HTTP/1.1
+Host: server.videoplus.cc:8443
+Authorization: Bearer {token}
+1分页获取商品列表
+1.1 接口概述
+接口地址：GET /product/product/list
+完整示例： https://server.videoplus.cc:8443/product/product/list?pageNum=1&pageSize=10&orderByColumn=id&isAsc=desc
+接口描述：按分页条件查询商品基础信息，支持多字段排序，返回商品主数据及其自定义关联信息。
+身份验证：需携带有效的 Cookie / Token。
+数据格式：请求使用 QueryString，响应格式为 JSON。
+1.2 请求参数
+参数名
+类型
+是否必填
+默认值
+说明
+pageNum
+int
+否
+1
+当前页码（从 1 开始）
+pageSize
+int
+否
+10
+每页条数
+orderByColumn
+string
+否
+id
+排序字段（与表字段一致）
+isAsc
+string
+否
+asc
+排序方向：asc升序，desc降序
+1.3 返回字段
+顶层字段：
+字段
+类型
+说明
+code
+int
+业务状态码，200表示成功
+msg
+string
+提示信息
+total
+int
+记录总数
+rows
+array<Product>
+商品列表数据
+Product 对象字段：
+字段
+类型
+说明
+id
+int
+商品ID
+productName
+string
+商品名称
+productNameChild
+string
+子标题/副标题
+productBrandId
+int
+品牌ID
+productBrandName
+string
+品牌名称
+productCategoryId
+int
+一级品类ID
+productCategoryName
+string
+一级品类名称
+productSpecificationsId
+int
+规格ID
+productSpecificationsName
+string
+规格名称
+productClassifyId
+int
+一级分类ID
+productClassifyName
+string
+一级分类名称
+productClassify2Id
+int
+二级分类ID
+productClassify2Name
+string
+二级分类名称
+productEffectId
+int
+功效ID
+productEffectName
+string
+功效描述
+keyPoint
+string
+关键卖点
+customProductList
+array<CustomProduct>
+客户商品关联信息
+CustomProduct 对象字段：
+字段
+类型
+说明
+id
+int
+关联ID
+customId
+int
+客户ID
+productId
+int
+商品ID
+1.4 示例响应
+请参考实际返回的 JSON 数据。
+1.5 状态码说明
+HTTP状态码
+业务code
+说明
+200
+200
+请求成功
+200
+400
+参数错误
+200
+401
+未授权或Token失效
+200
+500
+服务器内部错误
+ 
+2 提交视频接口
+2.1 接口概述
+接口名称：提交视频接口
+请求地址：POST /system/materialMgt/preSubmitGeneratedMaterial
+完整示例： https://server.videoplus.cc:8443/system/materialMgt/preSubmitGeneratedMaterial
+接口描述：用于提交视频任务前获取上传路径及素材ID。获取后将需要提交的视频文件放置于返回的 filePath 路径中。
+请求方式：POST
+请求格式：application/json
+2.2 请求参数
+参数名
+类型
+是否必填
+说明
+materialType
+int
+是
+素材类型：3001 - 口播，4001 - 空境
+materialFileType
+int
+是
+文件格式：1002 - mp4，1008 - mov（透明背景），2004 - png，2002 - jpg
+productId
+long
+是
+ 
+tags
+String
+是
+标签名称，用逗号隔开，只支持中英文数字
+keyframesUrl
+String
+是
+缩略帧oss地址
+  
+标签名称，用逗号隔开，只支持中英文数字
+请求body示例：
+{
+    "materialType": 3001,
+    "materialFileType":1002,
+    "productId":10255,
+    "tags":"肚子疼,小腹疼,中年,男人"，
+    "keyframesUrl": "keyframesUrl.jpeg"
+}
+2.3 返回字段
+成功响应示例：
+
+{
+    "code": 200,
+    "data": {
+        "filePath": "z:\abc\def\aaa.mp4",
+        "materialId": 1129392
+    }
+}
+字段
+类型
+说明
+code
+int
+状态码，200 表示成功
+data.filePath
+string
+用于存放上传文件的路径
+data.materialId
+int
+素材ID，后续处理使用
+2.4 使用说明
+调用接口成功后，将需要上传的视频文件放置到返回的 filePath 所指定的路径中。
+3 视频状态更新接口
+3.1接口概述
+接口名称：视频状态提交
+请求地址：POST /system/materialMgt/materialStatusSubmit
+完整示例： https://server.videoplus.cc:8443/system/materialMgt/materialStatusSubmit
+接口描述：文件放置后需将状态提交给vh（成功或失败）。
+请求方式：POST
+请求格式：application/json
+3.2请求参数
+参数名
+类型
+是否必填
+说明
+materialId
+long
+是
+提交接口返回的
+dealStatus
+int
+是
+1-成功 2-失败
+msg
+String
+是
+失败原因
+ 
+ 
+ 
+ 
+请求body示例：
+{
+    "materialId": 123456,
+    "dealStatus":1,
+    "msg":""
+}
+3.3 返回字段
+成功响应示例：
+
+{
+    "code": 200,
+}
+字段
+类型
+说明
+code
+int
+状态码，200 表示成功
+4. 用户登录接口
+4.1 接口概述
+- 接口名称：用户登录接口
+- 请求地址：POST /login
+- 完整示例：https://server.videoplus.cc:8443/login
+- 描述：用于用户身份验证和登录，验证成功后返回 JWT 访问令牌
+- 请求格式：application/json
+- 身份验证：无需认证（登录接口本身不需要认证）
+4.2 请求参数
+参数名	类型	是否必填	说明
+username	string	是	用户名
+password	string	是	用户密码
+code	string	是	验证码，访问 /captchaImage 可获取
+uuid	string	是	验证码对应的唯一标识
+请求示例：
+json
+复制编辑
+{
+  "username": "admin",
+  "password": "123456",
+  "code": "1234",
+  "uuid": "uuid-123456"
+}
+4.3 返回字段
+json
+复制编辑
+{
+  "code": 200,
+  "msg": "操作成功",
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+字段	类型	说明
+code	int	业务状态码，200表示成功
+msg	string	提示信息
+token	string	JWT访问令牌，用于后续认证
+4.4 使用说明
+5422. 登录成功后客户端需保存返回的 token
+5423. 后续请求在 Header 中添加：Authorization: Bearer {token}
+5424. token 的有效期由系统配置决定，过期后需重新登录
+4.5 状态码说明
+HTTP状态码	业务code	说明
+200	200	登录成功
+200	400	参数错误或验证码错误
+200	401	用户名或密码错误
+200	500	服务器内部错误

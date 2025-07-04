@@ -3,19 +3,6 @@ import { writeFile, mkdir } from 'fs/promises';
 import { dirname } from 'path';
 import { existsSync } from 'fs';
 
-// Server-side preview extraction using simple frame extraction
-const extractPreviewFromVideo = async (videoPath: string, outputPath: string): Promise<boolean> => {
-  try {
-    // For now, we'll skip server-side extraction as it requires ffmpeg
-    // This is a placeholder for future implementation
-    console.log('Server-side preview extraction not implemented yet');
-    return false;
-  } catch (error) {
-    console.error('Server-side preview extraction failed:', error);
-    return false;
-  }
-};
-
 export async function POST(request: NextRequest) {
   try {
     const { videoUrl, targetPath } = await request.json();
@@ -27,7 +14,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log('📥 Downloading video from URL:', videoUrl);
+    console.log('📥 Downloading video from URL for material submission:', videoUrl);
     console.log('📁 Target path:', targetPath);
 
     // Validate URL
@@ -58,7 +45,7 @@ export async function POST(request: NextRequest) {
     // Write the video to the target path
     await writeFile(targetPath, videoData);
 
-    console.log('✅ Video downloaded successfully:', targetPath);
+    console.log('✅ Video downloaded successfully for material submission:', targetPath);
     console.log('📊 File size:', videoData.length, 'bytes');
 
     return NextResponse.json({
@@ -69,7 +56,7 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('❌ Error downloading video:', error);
+    console.error('❌ Error downloading video for material submission:', error);
     
     return NextResponse.json(
       {

@@ -10,6 +10,26 @@ export interface VideoFrameExtractionResult {
 }
 
 /**
+ * Check if a URL is from the same origin (same protocol, domain, and port)
+ */
+const isSameOrigin = (url: string): boolean => {
+  try {
+    // Handle relative URLs (they are always same-origin)
+    if (url.startsWith('/')) {
+      return true;
+    }
+    
+    // Handle absolute URLs
+    const urlObj = new URL(url, window.location.origin);
+    return urlObj.origin === window.location.origin;
+  } catch (error) {
+    console.error('Error checking URL origin:', error);
+    // If we can't parse the URL, assume it's same-origin for safety
+    return true;
+  }
+};
+
+/**
  * Extract first frame from video URL using browser APIs
  * @param videoUrl - URL of the video file
  * @param timeOffset - Time offset in seconds to extract frame (default: 0.1)
@@ -23,6 +43,57 @@ export const extractVideoFrame = async (
 ): Promise<VideoFrameExtractionResult> => {
   console.log(`🎬 Starting video frame extraction from: ${videoUrl}`);
   
+  const sameOrigin = isSameOrigin(videoUrl);
+  console.log(`🔍 Video URL origin check: ${sameOrigin ? 'same-origin' : 'cross-origin'}`);
+  
+  if (sameOrigin) {
+    // For same-origin videos, don't use CORS
+    console.log(`🔗 Using same-origin extraction (no CORS)`);
+    const result = await tryExtractWithCors(videoUrl, timeOffset, quality, false);
+    if (result.success) {
+      console.log(`✅ Same-origin frame extracted successfully`);
+      return result;
+    } else {
+      console.error(`❌ Same-origin extraction failed: ${result.error}`);
+      return result;
+    }
+  } else {
+    // For cross-origin videos, try CORS first, then fallback
+    console.log(`🌐 Using cross-origin extraction (with CORS fallback)`);
+    
+    // First try with CORS enabled (anonymous)
+    const corsResult = await tryExtractWithCors(videoUrl, timeOffset, quality, true);
+    if (corsResult.success) {
+      console.log(`✅ Frame extracted successfully with CORS`);
+      return corsResult;
+    }
+    
+    console.log(`⚠️ CORS extraction failed, trying without CORS...`);
+    
+    // Fallback to without CORS
+    const noCorsResult = await tryExtractWithCors(videoUrl, timeOffset, quality, false);
+    if (noCorsResult.success) {
+      console.log(`✅ Frame extracted successfully without CORS`);
+      return noCorsResult;
+    }
+    
+    console.error(`❌ Both CORS and non-CORS extraction failed`);
+    return {
+      success: false,
+      error: `Failed to extract frame: ${noCorsResult.error}`
+    };
+  }
+};
+
+/**
+ * Try to extract video frame with or without CORS
+ */
+const tryExtractWithCors = async (
+  videoUrl: string,
+  timeOffset: number,
+  quality: number,
+  useCors: boolean
+): Promise<VideoFrameExtractionResult> => {
   return new Promise((resolve) => {
     try {
       const video = document.createElement('video');
@@ -38,7 +109,11 @@ export const extractVideoFrame = async (
         return;
       }
 
-      // Try without CORS first, then fallback to anonymous
+      // Set CORS attribute if needed
+      if (useCors) {
+        video.crossOrigin = 'anonymous';
+      }
+      
       video.preload = 'metadata';
       video.muted = true; // Helps with autoplay restrictions
 
@@ -78,19 +153,19 @@ export const extractVideoFrame = async (
             dataUrl: dataUrl
           });
         } catch (error) {
-          console.error('❌ Failed to extract frame:', error);
+          console.error(`❌ Failed to extract frame${useCors ? ' with CORS' : ''}:`, error);
           resolve({
             success: false,
-            error: `Failed to extract frame (CORS?): ${error instanceof Error ? error.message : 'Unknown error'}`
+            error: `Failed to extract frame${useCors ? ' (CORS)' : ''}: ${error instanceof Error ? error.message : 'Unknown error'}`
           });
         }
       };
 
       video.onerror = (event) => {
-        console.error('❌ Video load error:', event);
+        console.error(`❌ Video load error${useCors ? ' with CORS' : ''}:`, event);
         resolve({
           success: false,
-          error: `Video load error - possibly CORS restrictions`
+          error: `Video load error${useCors ? ' - CORS may be blocked' : ' - possibly network issue'}`
         });
       };
 
@@ -115,10 +190,10 @@ export const extractVideoFrame = async (
               dataUrl: dataUrl
             });
           } catch (error) {
-            console.error('❌ Failed to extract frame via fallback:', error);
+            console.error(`❌ Failed to extract frame via fallback${useCors ? ' with CORS' : ''}:`, error);
             resolve({
               success: false,
-              error: `Failed to extract frame via fallback (CORS?): ${error instanceof Error ? error.message : 'Unknown error'}`
+              error: `Failed to extract frame via fallback${useCors ? ' (CORS)' : ''}: ${error instanceof Error ? error.message : 'Unknown error'}`
             });
           }
         }
@@ -127,25 +202,25 @@ export const extractVideoFrame = async (
       // Set timeout for cases where video doesn't load
       setTimeout(() => {
         if (video.readyState === 0) {
-          console.error('❌ Video load timeout after 15 seconds');
+          console.error(`❌ Video load timeout after 15 seconds${useCors ? ' with CORS' : ''}`);
           video.remove();
           canvas.remove();
           resolve({
             success: false,
-            error: 'Video load timeout - URL may not be accessible or CORS blocked'
+            error: `Video load timeout${useCors ? ' - CORS may be blocked' : ' - URL may not be accessible'}`
           });
         }
       }, 15000); // 15 second timeout
 
-      console.log(`🔗 Setting video source: ${videoUrl}`);
+      console.log(`🔗 Setting video source${useCors ? ' with CORS' : ''}: ${videoUrl}`);
       video.src = videoUrl;
       video.load();
 
     } catch (error) {
-      console.error('❌ Extraction setup failed:', error);
+      console.error(`❌ Extraction setup failed${useCors ? ' with CORS' : ''}:`, error);
       resolve({
         success: false,
-        error: `Extraction setup failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+        error: `Extraction setup failed${useCors ? ' (CORS)' : ''}: ${error instanceof Error ? error.message : 'Unknown error'}`
       });
     }
   });

@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { SessionMetadata } from '@/types/session';
+import ApiClient from '@/utils/apiClient';
 
 interface SessionSidebarProps {
   projectId: string;
@@ -28,23 +29,36 @@ export default function SessionSidebar({
   const [editingName, setEditingName] = useState('');
   const [scrollPosition, setScrollPosition] = useState(0);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   
   // Ref for the scrollable container
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
+  // Get authentication headers for product API calls
+  const getAuthHeaders = (): Record<string, string> => {
+    const apiClient = ApiClient.getInstance();
+    const token = apiClient.getToken();
+    return token ? { 'Authorization': `Bearer ${token}` } : {};
+  };
+
+  // Check if projectId is a product ID (numeric) or project ID (starts with proj_)
+  const isProductId = /^\d+$/.test(projectId);
+  const sessionsEndpoint = isProductId 
+    ? `/api/products/${projectId}/sessions` 
+    : `/api/projects/${projectId}/sessions`;
+
   useEffect(() => {
-    if (projectId) {
-      loadSessions();
-    }
+    loadSessions();
   }, [projectId]);
 
   // Handle scroll events for the rolling logic
   useEffect(() => {
     const handleScroll = () => {
-      if (scrollContainerRef.current) {
-        const scrollTop = scrollContainerRef.current.scrollTop;
-        setScrollPosition(scrollTop);
-        setShowScrollTop(scrollTop > 200);
+      const container = scrollContainerRef.current;
+      if (container) {
+        const { scrollTop, scrollHeight, clientHeight } = container;
+        const isAtBottom = scrollTop + clientHeight >= scrollHeight - 10;
+        setShowScrollToBottom(!isAtBottom && scrollHeight > clientHeight);
       }
     };
 
@@ -59,10 +73,15 @@ export default function SessionSidebar({
     if (!projectId) return;
     
     try {
-      const response = await fetch(`/api/projects/${projectId}/sessions`);
+      const headers = isProductId ? getAuthHeaders() : {};
+      const response = await fetch(sessionsEndpoint, { 
+        headers 
+      });
       const data = await response.json();
       if (data.success) {
         setSessions(data.sessions);
+      } else {
+        console.error('Error loading sessions:', data.error);
       }
     } catch (error) {
       console.error('Error loading sessions:', error);
@@ -75,18 +94,24 @@ export default function SessionSidebar({
     if (!projectId) return;
     
     try {
-      const response = await fetch(`/api/projects/${projectId}/sessions`, {
+      const headers = { 'Content-Type': 'application/json' };
+      if (isProductId) {
+        Object.assign(headers, getAuthHeaders());
+      }
+      
+      const response = await fetch(sessionsEndpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ name: 'Untitled' }),
       });
       const data = await response.json();
       if (data.success) {
         await loadSessions();
         onSessionSelect(data.session.id);
-        onNewSession();
         // Scroll to top to show the new session
         scrollToTop();
+      } else {
+        console.error('Error creating session:', data.error);
       }
     } catch (error) {
       console.error('Error creating session:', error);
@@ -97,15 +122,31 @@ export default function SessionSidebar({
     e.stopPropagation();
     if (!confirm(dict.sessionSidebar.deleteConfirm)) return;
     
+    const isCurrentSession = currentSessionId === sessionId;
+    console.log('🗑️ Attempting to delete session:', sessionId, 'Is current session:', isCurrentSession);
+    
     try {
-      await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
-      await loadSessions();
-      if (currentSessionId === sessionId) {
-        // Create a new session if we deleted the current one
-        handleCreateSession();
+      const response = await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+      const data = await response.json();
+      
+      if (data.success) {
+        console.log('✅ Session deleted successfully:', sessionId);
+        await loadSessions();
+        
+        if (isCurrentSession) {
+          // Add a small delay to ensure UI has updated before creating new session
+          console.log('⏳ Deleting current session, waiting before creating new one...');
+          setTimeout(async () => {
+            await handleCreateSession();
+          }, 100);
+        }
+      } else {
+        console.error('❌ Failed to delete session:', data.error);
+        alert(`Failed to delete session: ${data.error || 'Unknown error'}`);
       }
     } catch (error) {
-      console.error('Error deleting session:', error);
+      console.error('❌ Error deleting session:', error);
+      alert('Error deleting session. Please try again.');
     }
   };
 
@@ -310,7 +351,11 @@ export default function SessionSidebar({
                               {isCollapsed ? session.name.slice(0, 2).toUpperCase() : session.name}
                             </h4>
                             {!isCollapsed && (
-                              <div className="opacity-0 group-hover:opacity-100 transition-opacity flex gap-1">
+                              <div className={`transition-opacity flex gap-1 ${
+                                currentSessionId === session.id 
+                                  ? 'opacity-70 group-hover:opacity-100' // Always visible for current session
+                                  : 'opacity-0 group-hover:opacity-100'   // Hidden until hover for others
+                              }`}>
                                 {session.name === 'untitled' ? (
                                   <button
                                     onClick={(e) => startEditing(session, e)}
@@ -328,7 +373,10 @@ export default function SessionSidebar({
                                   </span>
                                 )}
                                 <button
-                                  onClick={(e) => handleDeleteSession(session.id, e)}
+                                  onClick={(e) => {
+                                    console.log('🗑️ Delete button clicked for session:', session.id, 'Is current:', currentSessionId === session.id);
+                                    handleDeleteSession(session.id, e);
+                                  }}
                                   className="p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50"
                                   title={dict.sessionSidebar.deleteSession}
                                 >
@@ -374,7 +422,7 @@ export default function SessionSidebar({
           </button>
         )}
         
-        {!isCollapsed && sessions.length > 5 && (
+        {!isCollapsed && showScrollToBottom && (
           <button
             onClick={scrollToBottom}
             className="absolute bottom-4 right-4 p-2 bg-white border border-gray-300 rounded-full shadow-sm hover:shadow-md transition-all text-gray-600 hover:text-gray-900"

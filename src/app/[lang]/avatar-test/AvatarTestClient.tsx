@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { AvatarSessionManager, AvatarSessionData, AvatarAsset, AvatarGroup } from '@/utils/avatarSessionManager';
 import { COMBINED_RATIO_RESOLUTION_OPTIONS } from '@/utils/imageRatioUtils';
@@ -37,7 +38,7 @@ import {
   useVideoGeneration
 } from './components/hooks';
 
-export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
+export default function AvatarTestClient({ dict, searchParams }: AvatarTestClientProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [successNotification, setSuccessNotification] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +48,16 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
   // Local state for immediate UI updates (debounced session save)
   const [localVideoText, setLocalVideoText] = useState<string>('');
 
+  // Ref to track restored sessions to prevent loops
+  const restoredSessionsRef = useRef<Set<string>>(new Set());
+
+  // Extract product information from searchParams
+  const productId = searchParams?.productId as string;
+  const productName = searchParams?.productName as string;
+
+  // Initialize router for navigation
+  const router = useRouter();
+
   // Use custom hooks
   const { 
     avatarSession, 
@@ -55,7 +66,7 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
     loadSession, 
     createNewSession,
     saveCompleteSessionState
-  } = useAvatarSession();
+  } = useAvatarSession(productId);
   
   // Session-based state getters
   const sessionExistingImages = avatarSession?.existingImages || [];
@@ -74,13 +85,6 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
   useEffect(() => {
     setLocalVideoText(videoText);
   }, [videoText]);
-
-  const {
-    handleRatioResolutionChange,
-    generatePrompt,
-    handlePromptEdit,
-    generateAvatars
-  } = useAvatarPrompts();
 
   const {
     isGeneratingVideo,
@@ -102,6 +106,7 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
     checkVideoStatus,
     startVideoStatusInterval,
     clearVideoStatusInterval,
+    addVideoStatusInterval,
     clearAllVideoStatusIntervals,
     waitForAvatarsCompletion
   } = useVideoGeneration();
@@ -140,6 +145,210 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
     updateAvatarSession({ selectedAvatars: avatars });
   }, [updateAvatarSession]);
 
+  // Session-aware prompt generation functions
+  const handleRatioResolutionChange = useCallback((newAspectRatio: string, newResolution: {width: number, height: number}) => {
+    console.log('🔄 Avatar generation ratio/resolution change:', { newAspectRatio, newResolution });
+    
+    // Update the selected combined option
+    const newOption = COMBINED_RATIO_RESOLUTION_OPTIONS.find(
+      option => option.aspectRatio === newAspectRatio && 
+                option.width === newResolution.width && 
+                option.height === newResolution.height
+    );
+    
+    if (newOption) {
+      updateAvatarSession({ 
+        aspectRatio: newAspectRatio,
+        resolution: `${newResolution.width}x${newResolution.height}`,
+        selectedCombinedOption: newOption
+      });
+    }
+  }, [updateAvatarSession]);
+
+  const generatePrompt = useCallback(async () => {
+    if (!avatarDescription.trim()) {
+      setError('Please enter an avatar description');
+      return;
+    }
+
+    setIsOptimizing(true);
+    setError(null);
+
+    try {
+      console.log('🤖 Generating prompt for:', avatarDescription);
+      const response = await fetch('/api/optimize-avatar-prompt', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          description: avatarDescription,
+          messages: conversation
+        }),
+      });
+
+      const data = await response.json();
+      console.log('🤖 Prompt generation response:', data);
+
+      if (data.success) {
+        const newPrompt: AvatarPrompt = {
+          id: Date.now(),
+          content: avatarDescription,
+          runwayPrompt: data.optimizedPrompt,
+          chineseTranslation: data.chineseTranslation || '',
+          isEdited: false,
+          generatedImages: [],
+          isGeneratingImages: false,
+          failedCount: 0
+        };
+
+        // Update session with new prompt and conversation
+        const newConversation: ConversationMessage[] = [
+          ...conversation,
+          { role: 'user' as const, content: avatarDescription },
+          { role: 'assistant' as const, content: data.optimizedPrompt }
+        ];
+
+        updateAvatarSession({ 
+          avatarPrompts: [...avatarPrompts, newPrompt],
+          conversation: newConversation
+        });
+
+        console.log('✅ Prompt generated successfully!');
+      } else {
+        console.error('❌ Prompt generation failed:', data.error);
+        setError(data.error || 'Failed to optimize prompt');
+      }
+    } catch (error) {
+      console.error('❌ Error optimizing prompt:', error);
+      setError('Network error occurred');
+    } finally {
+      setIsOptimizing(false);
+    }
+  }, [avatarDescription, conversation, avatarPrompts, updateAvatarSession]);
+
+  const handlePromptEdit = useCallback((id: number, newRunwayPrompt: string) => {
+    const updatedPrompts = avatarPrompts.map(prompt => 
+      prompt.id === id 
+        ? { ...prompt, runwayPrompt: newRunwayPrompt, isEdited: true }
+        : prompt
+    );
+    updateAvatarSession({ avatarPrompts: updatedPrompts });
+  }, [avatarPrompts, updateAvatarSession]);
+
+  const generateAvatars = useCallback(async (promptId: number, imageCount: number) => {
+    const prompt = avatarPrompts.find(p => p.id === promptId);
+    if (!prompt) return;
+
+    // Set generating state for this specific prompt
+    const updatedPrompts = avatarPrompts.map(p => 
+      p.id === promptId 
+        ? { ...p, isGeneratingImages: true }
+        : p
+    );
+    updateAvatarSession({ avatarPrompts: updatedPrompts });
+
+    try {
+      // Convert string resolution to object format that the API expects
+      const resolutionObj = (() => {
+        if (typeof resolution === 'string') {
+          const [width, height] = resolution.split('x').map(Number);
+          return { width, height };
+        }
+        return resolution;
+      })();
+
+      console.log('🖼️ Generating avatars:', { promptId, imageCount, aspectRatio, resolution: resolutionObj });
+      const response = await fetch('/api/runway-generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          promptText: prompt.runwayPrompt,
+          imageCount: imageCount,
+          aspectRatio: aspectRatio,
+          resolution: resolutionObj
+        }),
+      });
+
+      const data = await response.json();
+      console.log('🖼️ Runway API Response:', data);
+
+      if (data.success) {
+        if (data.images && data.images.length > 0) {
+          // Generation successful - update prompt with new images
+          const newGeneratedImages: GeneratedAvatar[] = data.images.map((imageData: any, index: number) => ({
+            id: `${imageData.taskId}_${index}`,
+            filename: imageData.filename,
+            url: imageData.url,
+            prompt: imageData.prompt,
+            taskId: imageData.taskId
+          }));
+
+          console.log('✅ Generated avatars:', newGeneratedImages.length);
+          
+          const finalUpdatedPrompts = avatarPrompts.map(p => 
+            p.id === promptId 
+              ? { 
+                  ...p, 
+                  isGeneratingImages: false, 
+                  generatedImages: [...p.generatedImages, ...newGeneratedImages]
+                }
+              : p
+          );
+          updateAvatarSession({ avatarPrompts: finalUpdatedPrompts });
+
+          // Show warning if not all images were generated
+          if (data.images.length < imageCount) {
+            setError(`Partially successful: ${data.images.length}/${imageCount} images generated`);
+          }
+        } else {
+          // API succeeded but no images returned (likely timeout)
+          console.log('⚠️ API succeeded but no images returned - likely timeout');
+          const failedPrompts = avatarPrompts.map(p => 
+            p.id === promptId 
+              ? { 
+                  ...p, 
+                  isGeneratingImages: false,
+                  failedCount: p.failedCount + 1
+                }
+              : p
+          );
+          updateAvatarSession({ avatarPrompts: failedPrompts });
+          setError('Generation timed out - no images were completed within the time limit');
+        }
+      } else {
+        // API returned success: false
+        console.log('❌ API returned success: false:', data.error);
+        const failedPrompts = avatarPrompts.map(p => 
+          p.id === promptId 
+            ? { 
+                ...p, 
+                isGeneratingImages: false,
+                failedCount: p.failedCount + 1
+              }
+            : p
+        );
+        updateAvatarSession({ avatarPrompts: failedPrompts });
+        setError(data.error || 'Failed to generate avatars');
+      }
+    } catch (error) {
+      console.error('❌ Error generating avatars:', error);
+      const failedPrompts = avatarPrompts.map(p => 
+        p.id === promptId 
+          ? { 
+              ...p, 
+              isGeneratingImages: false,
+              failedCount: p.failedCount + 1
+            }
+          : p
+      );
+      updateAvatarSession({ avatarPrompts: failedPrompts });
+      setError('Network error occurred during generation');
+    }
+  }, [avatarPrompts, aspectRatio, resolution, updateAvatarSession]);
+
   const {
     existingImages,
     selectedAvatars,
@@ -174,13 +383,6 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
       console.log(`   Video ${video.videoId}: status=${video.status}, hasUrl=${!!video.videoUrl}`);
     });
   }, [generatedVideos]);
-
-  // Cleanup intervals on unmount
-  useEffect(() => {
-    return () => {
-      clearAllVideoStatusIntervals();
-    };
-  }, []);
 
   // Custom video status checking that updates session state
   const checkVideoStatusAndUpdateSession = useCallback(async (videoId: string) => {
@@ -259,8 +461,40 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
     }, 5000); // Check every 5 seconds
     
     // Store the interval using the hook's management
-    setStatusCheckIntervals(prev => new Map(prev.set(videoId, interval)));
-  }, [checkVideoStatusAndUpdateSession, setStatusCheckIntervals]);
+    addVideoStatusInterval(videoId, interval);
+  }, [checkVideoStatusAndUpdateSession, addVideoStatusInterval]);
+
+  // Cleanup intervals on unmount
+  useEffect(() => {
+    return () => {
+      clearAllVideoStatusIntervals();
+    };
+  }, [clearAllVideoStatusIntervals]); // Now safe since functions are properly memoized
+
+  // Handle video restoration when sessions are loaded
+  useEffect(() => {
+    if (avatarSession && generatedVideos.length > 0 && !restoredSessionsRef.current.has(avatarSession.id)) {
+      console.log('🔄 Restoring video status monitoring for session:', avatarSession.id);
+      
+      // Mark this session as restored
+      restoredSessionsRef.current.add(avatarSession.id);
+      
+      generatedVideos.forEach(video => {
+        if (video.status === 'processing' && video.videoId) {
+          console.log(`🚀 Restarting video status monitoring for processing video: ${video.videoId}`);
+          // Create interval manually to use session-updating function
+          const interval = setInterval(() => {
+            checkVideoStatusAndUpdateSession(video.videoId);
+          }, 5000);
+          addVideoStatusInterval(video.videoId, interval);
+        } else if (video.status === 'completed' && video.videoUrl) {
+          console.log(`✅ Video already completed: ${video.videoId} - ${video.videoUrl.substring(0, 50)}...`);
+        }
+      });
+    } else if (avatarSession && restoredSessionsRef.current.has(avatarSession.id)) {
+      console.log('⏭️ Session already restored, skipping:', avatarSession.id);
+    }
+  }, [avatarSession?.id, checkVideoStatusAndUpdateSession, addVideoStatusInterval]); // Added dependencies
 
   // Reset states when switching sessions (selections will sync from session data automatically)
   useEffect(() => {
@@ -272,9 +506,11 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
       setUploadStatus('');
       setMotionStatus('');
       setVideoGenerationStatus('');
-      updateAvatarSession({ videoText: '', avatarDescription: '' });
       setError(null);
       setSuccessNotification('');
+      
+      // Clear restored sessions tracking when switching sessions
+      restoredSessionsRef.current.clear();
     }
   }, [currentSessionId]);
 
@@ -294,7 +530,14 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
 
   // Session management handlers
   const handleSessionSelect = async (sessionId: string) => {
-    await loadSession(sessionId);
+    console.log('🔄 Loading session:', sessionId);
+    const loadedSession = await loadSession(sessionId);
+    if (loadedSession?.generatedVideos?.length > 0) {
+      console.log('📹 Session has videos:', loadedSession.generatedVideos.length);
+      loadedSession.generatedVideos.forEach((video: GeneratedVideo) => {
+        console.log(`   Video ${video.videoId}: status=${video.status}, hasUrl=${!!video.videoUrl}`);
+      });
+    }
   };
 
   const handleNewSession = async () => {
@@ -952,15 +1195,24 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
       }
 
       // Add all successful videos to the state
-      const newVideos: GeneratedVideo[] = successfulVideos.map((result, index) => ({
-        id: `video_${Date.now()}_${index}`,
-        videoId: result.videoId,
-        status: 'processing',
-        assetId: result.motionAvatarId,
-        voiceId: audioInfo.voice || 'Custom Audio',
-        text: `Audio: ${audioInfo.voice || 'Custom Voice'} | Avatar: ${result.avatarName}`,
-        createdAt: new Date().toISOString()
-      }));
+      const newVideos: GeneratedVideo[] = successfulVideos.map((result, index) => {
+        // Find the original avatar image URL by matching avatar name
+        const originalAvatar = selectedAvatars.find(avatar => {
+          const avatarName = avatar.filename?.replace(/\.[^/.]+$/, '') || avatar.filename;
+          return avatarName === result.avatarName;
+        });
+        
+        return {
+          id: `video_${Date.now()}_${index}`,
+          videoId: result.videoId,
+          status: 'processing',
+          assetId: result.motionAvatarId,
+          voiceId: audioInfo.voice || 'Custom Audio',
+          text: `Audio: ${audioInfo.voice || 'Custom Voice'} | Avatar: ${result.avatarName}`,
+          createdAt: new Date().toISOString(),
+          originalAvatarImageUrl: originalAvatar?.url // Store original avatar image URL for keyframe extraction
+        };
+      });
 
       updateAvatarSession({ generatedVideos: [...generatedVideos, ...newVideos] });
       
@@ -1005,14 +1257,53 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
         onNewSession={handleNewSession}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        productId={productId}
       />
 
       {/* Main Content */}
       <div className="flex-1 overflow-auto">
         <div className="max-w-6xl mx-auto p-6">
+          {/* Back Button */}
+          {productId && (
+            <div className="mb-4">
+              <button
+                onClick={() => router.push(`/product/${productId}`)}
+                className="flex items-center space-x-2 text-gray-600 hover:text-gray-900 transition-colors"
+              >
+                <span>←</span>
+                <span>Back to Product</span>
+              </button>
+            </div>
+          )}
+          
           <div className="mb-8">
-            <h1 className="text-3xl font-bold text-center mb-2">Avatar Video Creator - Testing</h1>
-            <p className="text-gray-600 text-center">Choose multiple existing images or generate new avatars for video creation</p>
+            <h1 className="text-3xl font-bold text-center mb-2">
+              {productId ? `Avatar Video Creator - Product ${productId}` : 'Avatar Video Creator - Testing'}
+            </h1>
+            <p className="text-gray-600 text-center">
+              {productId 
+                ? `Create avatar videos for ${decodeURIComponent(productName || `Product ${productId}`)}`
+                : 'Choose multiple existing images or generate new avatars for video creation'
+              }
+            </p>
+            
+            {/* Product Information Section */}
+            {productId && productName && (
+              <div className="mt-6 mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-blue-800">Creating Avatar Video for Product</h3>
+                    <p className="text-blue-600 mt-1">
+                      <strong>Product:</strong> {decodeURIComponent(productName)} (ID: {productId})
+                    </p>
+                    <p className="text-sm text-blue-500 mt-1">
+                      This avatar video will be associated with the selected product.
+                    </p>
+                  </div>
+                  <div className="text-4xl">🎬</div>
+                </div>
+              </div>
+            )}
             
             {/* Session Info Panel */}
             <SessionInfoPanel avatarSession={avatarSession} />
@@ -1137,6 +1428,8 @@ export default function AvatarTestClient({ dict }: AvatarTestClientProps) {
           <GeneratedVideosDisplay
             generatedVideos={generatedVideos}
             forceRender={forceRender}
+            productId={productId}
+            productName={productName}
           />
         </div>
       </div>
