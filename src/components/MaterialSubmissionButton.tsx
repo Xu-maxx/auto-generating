@@ -36,13 +36,23 @@ const MaterialSubmissionButton: React.FC<MaterialSubmissionButtonProps> = ({
       relativePath: task.relativePath,
       localPath: task.localPath,
       videoUrl: task.videoUrl,
-      imageName: task.imageName
+      imageName: task.imageName,
+      imageUrl: task.imageUrl,
+      previewUrl: task.previewUrl
     })));
 
-    const completedTasks = videoTasks.filter(task => task.status === 'downloaded' && (task.relativePath || task.localPath));
+    const completedTasks = videoTasks.filter(task => task.status === 'downloaded' && (task.relativePath || task.localPath || task.videoUrl));
     
     console.log('🔍 DEBUG: Filtered completedTasks:', completedTasks);
     console.log('🔍 DEBUG: completedTasks count:', completedTasks.length);
+    console.log('🔍 DEBUG: completedTasks image URLs:', completedTasks.map(task => ({
+      taskId: task.taskId,
+      imageName: task.imageName,
+      imageUrl: task.imageUrl,
+      previewUrl: task.previewUrl,
+      hasImageUrl: !!task.imageUrl,
+      hasPreviewUrl: !!task.previewUrl
+    })));
     
     if (completedTasks.length === 0) {
       alert('No completed videos to submit');
@@ -190,7 +200,7 @@ const MaterialSubmissionButton: React.FC<MaterialSubmissionButtonProps> = ({
   };
 
   // Since videoTasks are already filtered to selected downloaded videos, use them directly
-  const completedCount = videoTasks.filter(task => task.status === 'downloaded' && (task.relativePath || task.localPath)).length;
+  const completedCount = videoTasks.filter(task => task.status === 'downloaded' && (task.relativePath || task.localPath || task.videoUrl)).length;
 
   return (
     <div className="space-y-2">

@@ -127,6 +127,101 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
     });
   }, [saveCompleteSessionState]);
 
+  // Save processing states to session (NEW: to preserve ongoing operations)
+  const saveProcessingStates = useCallback(async () => {
+    if (!avatarSession) return;
+    
+    const processingStates = {
+      isGeneratingVideo,
+      videoGenerationStatus,
+      isAddingMotion,
+      motionStatus,
+      isUploading,
+      uploadStatus,
+      lastProcessingUpdate: new Date().toISOString()
+    };
+    
+    // Only save if there are actual processing states to preserve
+    if (isGeneratingVideo || isAddingMotion || isUploading || 
+        videoGenerationStatus || motionStatus || uploadStatus) {
+      console.log('💾 Saving processing states to session:', processingStates);
+      await updateAvatarSession(processingStates);
+    }
+  }, [avatarSession, isGeneratingVideo, videoGenerationStatus, isAddingMotion, 
+      motionStatus, isUploading, uploadStatus, updateAvatarSession]);
+
+  // Auto-save processing states when they change
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      saveProcessingStates();
+    }, 1000); // Save 1 second after processing state changes
+
+    return () => clearTimeout(timeoutId);
+  }, [saveProcessingStates]);
+
+  // Restore processing states when session is loaded (NEW)
+  useEffect(() => {
+    if (avatarSession && avatarSession.id) {
+      console.log('🔄 Restoring processing states for session:', avatarSession.id);
+      
+      // Restore processing states if they exist in session data
+      if (avatarSession.isGeneratingVideo) {
+        setIsGeneratingVideo(true);
+        console.log('✅ Restored isGeneratingVideo:', true);
+      }
+      if (avatarSession.videoGenerationStatus) {
+        setVideoGenerationStatus(avatarSession.videoGenerationStatus);
+        console.log('✅ Restored videoGenerationStatus:', avatarSession.videoGenerationStatus);
+      }
+      if (avatarSession.isAddingMotion) {
+        setIsAddingMotion(true);
+        console.log('✅ Restored isAddingMotion:', true);
+      }
+      if (avatarSession.motionStatus) {
+        setMotionStatus(avatarSession.motionStatus);
+        console.log('✅ Restored motionStatus:', avatarSession.motionStatus);
+      }
+      if (avatarSession.isUploading) {
+        setIsUploading(true);
+        console.log('✅ Restored isUploading:', true);
+      }
+      if (avatarSession.uploadStatus) {
+        setUploadStatus(avatarSession.uploadStatus);
+        console.log('✅ Restored uploadStatus:', avatarSession.uploadStatus);
+      }
+      
+      // Check if processing states are stale (older than 5 minutes)
+      if (avatarSession.lastProcessingUpdate) {
+        const lastUpdate = new Date(avatarSession.lastProcessingUpdate);
+        const now = new Date();
+        const timeDiff = now.getTime() - lastUpdate.getTime();
+        const fiveMinutes = 5 * 60 * 1000;
+        
+        if (timeDiff > fiveMinutes) {
+          console.log('⚠️ Processing states are stale, clearing them');
+          setIsGeneratingVideo(false);
+          setVideoGenerationStatus('');
+          setIsAddingMotion(false);
+          setMotionStatus('');
+          setIsUploading(false);
+          setUploadStatus('');
+          
+          // Clear stale states from session
+          updateAvatarSession({
+            isGeneratingVideo: false,
+            videoGenerationStatus: '',
+            isAddingMotion: false,
+            motionStatus: '',
+            isUploading: false,
+            uploadStatus: '',
+            lastProcessingUpdate: ''
+          });
+        }
+      }
+    }
+  }, [avatarSession?.id, setIsGeneratingVideo, setVideoGenerationStatus, 
+      setIsAddingMotion, setMotionStatus, setIsUploading, setUploadStatus, updateAvatarSession]);
+
   // Debounced video text saving (5 seconds)
   useEffect(() => {
     const timeoutId = setTimeout(() => {
@@ -392,7 +487,21 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
       
       console.log(`🎬 Video status check for ${videoId}:`, data);
       
-      if (data.success) {
+      if (data.success || (data.code === 100 && data.data)) {
+        // Extract the actual video data - handle different API response structures
+        const videoData = data.data || data;
+        const videoStatus = videoData.status;
+        const videoUrl = videoData.video_url || videoData.videoUrl;
+        const thumbnailUrl = videoData.thumbnail_url || videoData.thumbnailUrl;
+        const duration = videoData.duration;
+        
+        console.log(`📊 Extracted video data for ${videoId}:`, {
+          status: videoStatus,
+          hasVideoUrl: !!videoUrl,
+          hasThumbnailUrl: !!thumbnailUrl,
+          duration: duration
+        });
+        
         // Get current session data directly to avoid dependency loops
         setAvatarSession(currentSession => {
           if (!currentSession) return currentSession;
@@ -402,11 +511,11 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
             if (video.videoId === videoId) {
               const updatedVideo = {
                 ...video,
-                status: data.status,
-                videoUrl: data.videoUrl || video.videoUrl,
-                thumbnailUrl: data.thumbnailUrl || video.thumbnailUrl,
-                duration: data.duration || video.duration,
-                videoData: data.data || video.videoData
+                status: videoStatus,
+                videoUrl: videoUrl || video.videoUrl,
+                thumbnailUrl: thumbnailUrl || video.thumbnailUrl,
+                duration: duration || video.duration,
+                videoData: videoData || video.videoData
               };
               
               console.log(`🔄 Updated video ${videoId}:`, updatedVideo);
@@ -415,9 +524,22 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
             return video;
           });
           
+          // Check if all videos in this session are completed or failed
+          const allVideosFinished = updatedVideos.every(video => 
+            video.status === 'completed' || video.status === 'failed'
+          );
+          
+          // Clear processing states if all videos are finished
+          const processingStateUpdates = allVideosFinished ? {
+            isGeneratingVideo: false,
+            videoGenerationStatus: '',
+            lastProcessingUpdate: new Date().toISOString()
+          } : {};
+          
           const updatedSession = { 
             ...currentSession, 
             generatedVideos: updatedVideos,
+            ...processingStateUpdates,
             updatedAt: new Date().toISOString() 
           };
           
@@ -430,19 +552,37 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
         });
         
         // Stop polling if video is completed or failed
-        if (data.status === 'completed' || data.status === 'failed') {
-          console.log(`🛑 Video ${videoId} ${data.status}, stopping polling...`);
+        if (videoStatus === 'completed' || videoStatus === 'failed') {
+          console.log(`🛑 Video ${videoId} ${videoStatus}, stopping polling...`);
           clearVideoStatusInterval(videoId);
           
-          if (data.status === 'completed' && data.videoUrl) {
+          if (videoStatus === 'completed' && videoUrl) {
             console.log(`✅ Video generation completed successfully for ${videoId}!`);
             setSuccessNotification(`✅ Video completed: ${videoId}`);
-          } else if (data.status === 'failed') {
+            
+            // Check if this was the last video being processed
+            const currentVideos = generatedVideos || [];
+            const processingVideos = currentVideos.filter(v => v.status === 'processing');
+            if (processingVideos.length <= 1) { // <= 1 because this video is about to be marked as completed
+              console.log('🎉 All videos completed! Clearing processing states...');
+              setIsGeneratingVideo(false);
+              setVideoGenerationStatus('');
+            }
+          } else if (videoStatus === 'failed') {
             console.log(`❌ Video generation failed for ${videoId}`);
             setError(`Video generation failed for ${videoId}`);
+            
+            // Also clear processing states if this was the last video
+            const currentVideos = generatedVideos || [];
+            const processingVideos = currentVideos.filter(v => v.status === 'processing');
+            if (processingVideos.length <= 1) {
+              console.log('⚠️ No more videos processing, clearing processing states...');
+              setIsGeneratingVideo(false);
+              setVideoGenerationStatus('');
+            }
           }
         } else {
-          console.log(`⏳ Video ${videoId} status: ${data.status} - continuing to poll...`);
+          console.log(`⏳ Video ${videoId} status: ${videoStatus} - continuing to poll...`);
         }
       } else {
         console.error('Failed to check video status:', data.error);
@@ -450,7 +590,8 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
     } catch (error) {
       console.error('Error checking video status:', error);
     }
-  }, [setAvatarSession, saveCompleteSessionState, clearVideoStatusInterval]);
+  }, [setAvatarSession, saveCompleteSessionState, clearVideoStatusInterval, generatedVideos, 
+      setIsGeneratingVideo, setVideoGenerationStatus]);
 
   // Custom video status interval management
   const startVideoStatusIntervalWithSessionUpdate = useCallback((videoId: string) => {
@@ -499,33 +640,53 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
   // Reset states when switching sessions (selections will sync from session data automatically)
   useEffect(() => {
     if (currentSessionId) {
-      // Reset processing states and other states when switching sessions
-      setIsUploading(false);
-      setIsAddingMotion(false);
-      setIsGeneratingVideo(false);
-      setUploadStatus('');
-      setMotionStatus('');
-      setVideoGenerationStatus('');
+      console.log('🔄 Switching to session:', currentSessionId);
+      
+      // Only reset UI states and errors when switching sessions
+      // Processing states will be restored by the restoration logic
       setError(null);
       setSuccessNotification('');
       
       // Clear restored sessions tracking when switching sessions
       restoredSessionsRef.current.clear();
+      
+      console.log('✅ Session switching cleanup completed');
     }
   }, [currentSessionId]);
 
-  // Manual reset function for debugging stuck states
-  const resetAllStates = () => {
+  // Clear processing states only when explicitly needed (not during session switches)
+  const clearProcessingStates = useCallback(() => {
     setIsUploading(false);
     setIsAddingMotion(false);
     setIsGeneratingVideo(false);
     setUploadStatus('');
     setMotionStatus('');
     setVideoGenerationStatus('');
+    
+    // Also clear from session data
+    if (avatarSession) {
+      updateAvatarSession({
+        isGeneratingVideo: false,
+        videoGenerationStatus: '',
+        isAddingMotion: false,
+        motionStatus: '',
+        isUploading: false,
+        uploadStatus: '',
+        lastProcessingUpdate: ''
+      });
+    }
+    
+    console.log('🔄 Processing states cleared');
+  }, [avatarSession, updateAvatarSession, setIsUploading, setIsAddingMotion, 
+      setIsGeneratingVideo, setUploadStatus, setMotionStatus, setVideoGenerationStatus]);
+
+  // Manual reset function for debugging stuck states
+  const resetAllStates = () => {
+    clearProcessingStates();
+    clearAllVideoStatusIntervals();
     setError(null);
     setSuccessNotification('');
-    clearAllVideoStatusIntervals();
-    console.log('🔄 All processing states have been reset');
+    console.log('🔄 All states have been reset');
   };
 
   // Session management handlers

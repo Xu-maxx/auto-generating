@@ -211,7 +211,40 @@ export class MaterialVideoSubmissionHelper {
         // Last resort: try to extract from video (not implemented yet)
         if (videoTask.videoUrl) {
           console.warn('⚠️ No source or preview image available, video frame extraction needed');
-          throw new Error('No source image (imageUrl) or preview image (previewUrl) available. Video frame extraction is not yet implemented. Please ensure video tasks have the original source image URL.');
+          
+          // Provide detailed debugging info
+          console.error('❌ KEYFRAME ISSUE DEBUG:', {
+            taskId: videoTask.taskId,
+            imageName: videoTask.imageName,
+            hasImageUrl: !!videoTask.imageUrl,
+            hasPreviewUrl: !!videoTask.previewUrl,
+            hasVideoUrl: !!videoTask.videoUrl,
+            imageUrl: videoTask.imageUrl,
+            previewUrl: videoTask.previewUrl,
+            videoUrl: videoTask.videoUrl,
+            status: videoTask.status,
+            localPath: videoTask.localPath,
+            relativePath: videoTask.relativePath
+          });
+          
+          throw new Error(`No source image (imageUrl) or preview image (previewUrl) available for video task ${videoTask.taskId} (${videoTask.imageName}). 
+
+DEBUG INFO:
+- Task ID: ${videoTask.taskId}
+- Image Name: ${videoTask.imageName}
+- Has imageUrl: ${!!videoTask.imageUrl}
+- Has previewUrl: ${!!videoTask.previewUrl}
+- Status: ${videoTask.status}
+
+POSSIBLE CAUSES:
+1. The original image lookup failed (imageName doesn't match any addedImages)
+2. The video task wasn't updated with the correct image URLs
+3. The addedImages array is empty or doesn't contain the expected images
+
+SOLUTION:
+- Check MaterialPageClient console logs for image lookup details
+- Ensure video tasks have imageUrl and previewUrl properties set
+- The images should be available locally since they were uploaded to generate videos`);
         } else {
           throw new Error('No image source available in video task (no imageUrl, previewUrl, or videoUrl)');
         }
@@ -226,8 +259,48 @@ export class MaterialVideoSubmissionHelper {
         hasSourceImage: !!videoTask.imageUrl,
         hasPreview: !!videoTask.previewUrl,
         hasVideo: !!videoTask.videoUrl,
-        sourceImageName: videoTask.imageName // Original filename for debugging
+        sourceImageName: videoTask.imageName, // Original filename for debugging
+        imageUrlType: imageUrl?.startsWith('http') ? 'HTTP URL' : 
+                     imageUrl?.startsWith('/') ? 'Relative path' : 
+                     imageUrl?.startsWith('data:') ? 'Data URL' : 'Unknown',
+        imageUrlPreview: imageUrl?.substring(0, 100) + (imageUrl && imageUrl.length > 100 ? '...' : '')
       });
+
+      // Special handling for data URLs
+      if (imageUrl.startsWith('data:')) {
+        console.log('📸 Processing data URL for keyframe...');
+        
+        // For data URLs, we need to use a different approach
+        const response = await fetch('/api/save-data-url-as-file', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            dataUrl: imageUrl,
+            targetPath
+          }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Failed to save data URL as file');
+        }
+
+        const result = await response.json();
+        
+        if (!result.success) {
+          throw new Error(result.error || 'Data URL save failed');
+        }
+
+        console.log('✅ Data URL keyframe saved to server path:', {
+          targetPath,
+          fileSize: result.fileSize,
+          contentType: result.contentType
+        });
+
+        return; // Exit early for data URLs
+      }
 
       // Use the new download keyframe API
       const response = await fetch('/api/download-keyframe-image', {

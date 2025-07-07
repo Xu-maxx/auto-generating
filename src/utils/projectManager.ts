@@ -1,9 +1,5 @@
-import { getRedisClient } from './redis';
+import { getDatabaseAdapter } from './database';
 import { ProjectData, ProjectMetadata } from '@/types/project';
-
-const PROJECT_PREFIX = 'project:';
-const PROJECT_LIST_KEY = 'projects:list';
-const PROJECT_SESSIONS_PREFIX = 'project:sessions:';
 
 export class ProjectManager {
   
@@ -14,7 +10,7 @@ export class ProjectManager {
 
   // Create a new project
   static async createProject(name: string, style: string): Promise<ProjectData> {
-    const redis = await getRedisClient();
+    const db = getDatabaseAdapter();
     const projectId = this.generateProjectId();
     const now = new Date().toISOString();
     
@@ -28,32 +24,27 @@ export class ProjectManager {
     };
 
     // Store project data
-    await redis.hSet(`${PROJECT_PREFIX}${projectId}`, 'data', JSON.stringify(projectData));
+    await db.setDocument('projects', projectId, projectData);
     
     // Add to project list
-    await redis.sAdd(PROJECT_LIST_KEY, projectId);
-    
-    // Initialize empty sessions set for this project
-    await redis.del(`${PROJECT_SESSIONS_PREFIX}${projectId}`);
+    await db.addToSet('projects', 'list', projectId);
     
     return projectData;
   }
 
   // Get all projects metadata
   static async getAllProjects(): Promise<ProjectMetadata[]> {
-    const redis = await getRedisClient();
-    const projectIds = await redis.sMembers(PROJECT_LIST_KEY);
+    const db = getDatabaseAdapter();
+    const projectIds = await db.getSetMembers('projects', 'list');
     
     const projects: ProjectMetadata[] = [];
     
     for (const projectId of projectIds) {
       try {
-        const projectDataStr = await redis.hGet(`${PROJECT_PREFIX}${projectId}`, 'data');
-        if (projectDataStr) {
-          const projectData: ProjectData = JSON.parse(projectDataStr);
-          
+        const projectData = await db.getDocument('projects', projectId);
+        if (projectData) {
           // Get session count
-          const sessionCount = await redis.sCard(`${PROJECT_SESSIONS_PREFIX}${projectId}`);
+          const sessionCount = await db.getSetSize('projects', `sessions:${projectId}`);
           
           projects.push({
             id: projectData.id,
@@ -75,19 +66,18 @@ export class ProjectManager {
 
   // Get project by ID
   static async getProject(projectId: string): Promise<ProjectData | null> {
-    const redis = await getRedisClient();
+    const db = getDatabaseAdapter();
     
     try {
-      console.log('🔍 ProjectManager: Getting project from Redis:', projectId);
-      const projectDataStr = await redis.hGet(`${PROJECT_PREFIX}${projectId}`, 'data');
-      if (projectDataStr) {
-        const projectData = JSON.parse(projectDataStr);
-        
+      console.log('🔍 ProjectManager: Getting project from database:', projectId);
+      const projectData = await db.getDocument('projects', projectId);
+      
+      if (projectData) {
         // Get current session count
-        const sessionCount = await redis.sCard(`${PROJECT_SESSIONS_PREFIX}${projectId}`);
+        const sessionCount = await db.getSetSize('projects', `sessions:${projectId}`);
         projectData.sessionCount = sessionCount;
         
-        console.log('✅ ProjectManager: Project found in Redis:', {
+        console.log('✅ ProjectManager: Project found in database:', {
           id: projectData.id,
           name: projectData.name,
           style: projectData.style,
@@ -95,7 +85,7 @@ export class ProjectManager {
         });
         return projectData;
       } else {
-        console.log('❌ ProjectManager: Project not found in Redis:', projectId);
+        console.log('❌ ProjectManager: Project not found in database:', projectId);
       }
     } catch (error) {
       console.error(`❌ ProjectManager: Error loading project ${projectId}:`, error);
@@ -106,38 +96,36 @@ export class ProjectManager {
 
   // Update project
   static async updateProject(projectData: Partial<ProjectData> & { id: string }): Promise<void> {
-    const redis = await getRedisClient();
+    const db = getDatabaseAdapter();
     
     try {
-      console.log('💾 ProjectManager: Updating project in Redis:', {
+      console.log('💾 ProjectManager: Updating project in database:', {
         id: projectData.id,
         updates: Object.keys(projectData)
       });
       
       // Get existing project data
-      const existingDataStr = await redis.hGet(`${PROJECT_PREFIX}${projectData.id}`, 'data');
-      if (!existingDataStr) {
+      const existingData = await db.getDocument('projects', projectData.id);
+      
+      if (existingData) {
+        // Merge updates
+        const updatedData: ProjectData = {
+          ...existingData,
+          ...projectData,
+          updatedAt: new Date().toISOString(),
+        };
+
+        // Save updated data
+        await db.updateDocument('projects', projectData.id, updatedData);
+        
+        console.log('✅ ProjectManager: Project updated in database successfully:', {
+          id: updatedData.id,
+          name: updatedData.name,
+          style: updatedData.style
+        });
+      } else {
         throw new Error(`Project ${projectData.id} not found`);
       }
-      
-      const existingData: ProjectData = JSON.parse(existingDataStr);
-
-      // Merge updates
-      const updatedData: ProjectData = {
-        ...existingData,
-        ...projectData,
-        updatedAt: new Date().toISOString(),
-      };
-
-      // Save updated data
-      await redis.hSet(`${PROJECT_PREFIX}${projectData.id}`, 'data', JSON.stringify(updatedData));
-      
-      console.log('✅ ProjectManager: Project updated in Redis successfully:', {
-        id: updatedData.id,
-        name: updatedData.name,
-        style: updatedData.style
-      });
-      
     } catch (error) {
       console.error(`❌ ProjectManager: Error updating project ${projectData.id}:`, error);
       throw error;
@@ -146,17 +134,20 @@ export class ProjectManager {
 
   // Delete project
   static async deleteProject(projectId: string): Promise<void> {
-    const redis = await getRedisClient();
+    const db = getDatabaseAdapter();
     
     try {
       // Delete project data
-      await redis.del(`${PROJECT_PREFIX}${projectId}`);
+      await db.deleteDocument('projects', projectId);
       
       // Remove from project list
-      await redis.sRem(PROJECT_LIST_KEY, projectId);
+      await db.removeFromSet('projects', 'list', projectId);
       
       // Clean up project sessions list
-      await redis.del(`${PROJECT_SESSIONS_PREFIX}${projectId}`);
+      const sessionIds = await db.getSetMembers('projects', `sessions:${projectId}`);
+      for (const sessionId of sessionIds) {
+        await db.removeFromSet('projects', `sessions:${projectId}`, sessionId);
+      }
       
     } catch (error) {
       console.error(`Error deleting project ${projectId}:`, error);
@@ -166,19 +157,19 @@ export class ProjectManager {
 
   // Add session to project
   static async addSessionToProject(projectId: string, sessionId: string): Promise<void> {
-    const redis = await getRedisClient();
-    await redis.sAdd(`${PROJECT_SESSIONS_PREFIX}${projectId}`, sessionId);
+    const db = getDatabaseAdapter();
+    await db.addToSet('projects', `sessions:${projectId}`, sessionId);
   }
 
   // Remove session from project
   static async removeSessionFromProject(projectId: string, sessionId: string): Promise<void> {
-    const redis = await getRedisClient();
-    await redis.sRem(`${PROJECT_SESSIONS_PREFIX}${projectId}`, sessionId);
+    const db = getDatabaseAdapter();
+    await db.removeFromSet('projects', `sessions:${projectId}`, sessionId);
   }
 
   // Get all sessions for a project
   static async getProjectSessions(projectId: string): Promise<string[]> {
-    const redis = await getRedisClient();
-    return await redis.sMembers(`${PROJECT_SESSIONS_PREFIX}${projectId}`);
+    const db = getDatabaseAdapter();
+    return await db.getSetMembers('projects', `sessions:${projectId}`);
   }
 } 

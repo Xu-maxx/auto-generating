@@ -15,7 +15,6 @@ import {
   findClosestAspectRatio,
   getBestResolution
 } from '@/utils/imageRatioUtils';
-import { extractVideoFrame } from '@/utils/videoFrameExtractor';
 import ApiClient from '@/utils/apiClient';
 
 interface MaterialPageClientProps {
@@ -507,111 +506,87 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
 
           // If task is completed, automatically download the video AND process next queued image
           if (taskResult.status === 'done' && taskResult.video_url) {
-            console.log(`Video completed for task ${taskId}, starting download...`);
+            console.log(`Video completed for task ${taskId}: ${taskResult.video_url}`);
+
+            // Find the original image for this task
+            const currentTask = (currentSession?.videoTasks || []).find(t => t.taskId === taskId);
+            const originalImageName = currentTask?.imageName || `video_${imageIndex}`;
             
-            // Update status to downloading
+            // Find the original image URL from addedImages based on filename
+            // Try exact match first, then fallback to partial matching
+            let originalImage = addedImages.find(img => img.filename === originalImageName);
+            
+            if (!originalImage) {
+              // Try to find by partial matching (remove extensions, etc.)
+              const nameWithoutExt = originalImageName.replace(/\.[^/.]+$/, '');
+              originalImage = addedImages.find(img => 
+                img.filename.replace(/\.[^/.]+$/, '') === nameWithoutExt ||
+                img.filename.includes(nameWithoutExt) ||
+                nameWithoutExt.includes(img.filename.replace(/\.[^/.]+$/, ''))
+              );
+            }
+            
+            if (!originalImage && addedImages.length > 0) {
+              // Last resort: use the image at the same index
+              originalImage = addedImages[imageIndex] || addedImages[0];
+              console.warn(`🔍 Using fallback image lookup for task ${taskId}:`, {
+                originalImageName,
+                fallbackImage: originalImage?.filename,
+                reason: 'No exact or partial match found'
+              });
+            }
+            
+            const originalImageUrl = originalImage?.url || null;
+            
+            console.log(`🖼️ Original image lookup for task ${taskId}:`, {
+              originalImageName,
+              foundOriginalImage: !!originalImage,
+              originalImageUrl: originalImageUrl ? originalImageUrl.substring(0, 50) + '...' : 'null',
+              addedImagesCount: addedImages.length,
+              allAddedImageNames: addedImages.map(img => img.filename),
+              matchMethod: originalImage ? 
+                (addedImages.find(img => img.filename === originalImageName) ? 'exact' : 'fallback') : 'none'
+            });
+
+            // Update task with video info - always use original source image as preview
+            console.log(`🖼️ Setting video task properties for ${taskId}:`, {
+              videoUrl: taskResult.video_url,
+              originalImageUrl: originalImageUrl,
+              willSetImageUrl: !!originalImageUrl,
+              willSetPreviewUrl: !!originalImageUrl
+            });
+
             updateVideoTasks(prev => prev.map(task => 
-              task.taskId === taskId ? { ...task, status: 'downloading' } : task
+              task.taskId === taskId ? {
+                ...task,
+                status: 'downloaded',
+                videoUrl: taskResult.video_url, // Store the video URL
+                previewUrl: originalImageUrl || undefined, // Always use original source image as preview
+                imageUrl: originalImageUrl || undefined // Store original image URL for material submission (same as preview)
+              } : task
             ));
 
-            try {
-              // Extract video frame client-side before downloading
-              console.log(`Extracting video frame for task ${taskId}...`);
-              const frameExtractionResult = await extractVideoFrame(taskResult.video_url, 0.1, 0.8);
-              
-              // Find the original image name for this task using session state
-              const currentTask = (currentSession?.videoTasks || []).find(t => t.taskId === taskId);
-              const originalImageName = currentTask?.imageName || `video_${imageIndex}`;
-              
-              // Find the original image URL from addedImages based on filename
-              const originalImage = addedImages.find(img => img.filename === originalImageName);
-              const originalImageUrl = originalImage?.url || null;
-              
-              console.log(`🖼️ Original image lookup for task ${taskId}:`, {
-                originalImageName,
-                foundOriginalImage: !!originalImage,
-                originalImageUrl: originalImageUrl ? originalImageUrl.substring(0, 50) + '...' : 'null'
+            // Verify the task was updated correctly
+            setTimeout(() => {
+              const updatedTask = currentVideoTasksRef.current.find(t => t.taskId === taskId);
+              console.log(`🖼️ Verification - Task ${taskId} after update:`, {
+                hasImageUrl: !!updatedTask?.imageUrl,
+                hasPreviewUrl: !!updatedTask?.previewUrl,
+                imageUrl: updatedTask?.imageUrl,
+                previewUrl: updatedTask?.previewUrl,
+                imageName: updatedTask?.imageName
               });
+            }, 1000);
 
-              const downloadResponse = await fetch('/api/download-video', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  videoUrl: taskResult.video_url,
-                  folderName: folderName,
-                  originalFilename: originalImageName,
-                  taskId: taskId,
-                  previewDataUrl: frameExtractionResult.success ? frameExtractionResult.dataUrl : null,
-                  originalImageUrl: originalImageUrl // Include original image URL as fallback
-                }),
-              });
+            // Handle task completion
+            handleTaskCompletion(taskId, 'video completed');
 
-              const downloadResult = await downloadResponse.json();
-
-              if (downloadResult.success) {
-                console.log(`Video downloaded successfully: ${downloadResult.relativePath}`);
-                
-                // Update task with download info and preview
-                updateVideoTasks(prev => prev.map(task => 
-                  task.taskId === taskId ? {
-                    ...task,
-                    status: 'downloaded',
-                    localPath: downloadResult.filePath,
-                    relativePath: downloadResult.relativePath,
-                    previewUrl: downloadResult.previewUrl // Add preview URL
-                  } : task
-                ));
-
-                // Handle task completion
-                handleTaskCompletion(taskId, 'video completed and downloaded');
-
-                setPollingTasks(prev => {
-                  const newSet = new Set(prev);
-                  newSet.delete(taskId);
-                  return newSet;
-                });
-                return; // Stop polling
-              } else {
-                console.error(`Download failed for task ${taskId}:`, downloadResult.error);
-                
-                // Update task with download error but keep as completed
-                updateVideoTasks(prev => prev.map(task => 
-                  task.taskId === taskId ? {
-                    ...task,
-                    status: 'completed',
-                    error: `Download failed: ${downloadResult.error}`
-                  } : task
-                ));
-                
-                // Handle task completion even if download failed
-                handleTaskCompletion(taskId, 'video completed but download failed');
-              }
-            } catch (downloadError) {
-              console.error(`Download error for task ${taskId}:`, downloadError);
-              
-              // Update task with download error but keep as completed
-              updateVideoTasks(prev => prev.map(task => 
-                task.taskId === taskId ? {
-                  ...task,
-                  status: 'completed',
-                  error: `Download failed: ${downloadError instanceof Error ? downloadError.message : 'Unknown error'}`
-                } : task
-              ));
-              
-              // Handle task completion even if download failed
-              handleTaskCompletion(taskId, 'video completed but download failed');
-            }
-
-            // Clean up polling for this completed task
             setPollingTasks(prev => {
               const newSet = new Set(prev);
               newSet.delete(taskId);
               return newSet;
             });
             return; // Stop polling
-            
           } else if (taskResult.status === 'failed') {
             console.log(`Polling stopped for task ${taskId}: status = failed`);
             
@@ -717,14 +692,33 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
 
   const handleVideoClick = (video: VideoGenerationTask) => {
     console.log('🎬 Video clicked:', video.taskId, video.imageName);
+    console.log('🎬 Video details:', {
+      taskId: video.taskId,
+      imageName: video.imageName,
+      status: video.status,
+      videoUrl: video.videoUrl,
+      previewUrl: video.previewUrl,
+      hasValidId: !!(video.taskId)
+    });
+    
+    const videoId = video.taskId || '';
     const newSelected = new Set(selectedVideos);
-    if (newSelected.has(video.taskId || '')) {
-      newSelected.delete(video.taskId || '');
-      console.log('🔵 Video deselected:', video.taskId);
+    
+    if (newSelected.has(videoId)) {
+      newSelected.delete(videoId);
+      console.log('🔵 Video deselected:', videoId);
     } else {
-      newSelected.add(video.taskId || '');
-      console.log('🟢 Video selected:', video.taskId);
+      newSelected.add(videoId);
+      console.log('🟢 Video selected:', videoId);
     }
+    
+    console.log('🎬 Selection state:', {
+      previousCount: selectedVideos.size,
+      newCount: newSelected.size,
+      selectedIds: Array.from(newSelected),
+      allVideoIds: videoTasks.map(t => t.taskId)
+    });
+    
     setSelectedVideos(newSelected);
   };
 
@@ -735,24 +729,6 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
 
   const closeVideoPreview = () => {
     setPreviewVideo(null);
-  };
-
-  const extractVideoPreview = async (videoUrl: string, taskId: string): Promise<string | null> => {
-    try {
-      console.log(`🎬 Extracting video preview for task ${taskId}...`);
-      const result = await extractVideoFrame(videoUrl, 0.1, 0.8);
-      
-      if (result.success && result.dataUrl) {
-        console.log(`✅ Video preview extracted successfully for task ${taskId}`);
-        return result.dataUrl;
-      } else {
-        console.error(`❌ Failed to extract video preview for task ${taskId}:`, result.error);
-        return null;
-      }
-    } catch (error) {
-      console.error(`❌ Error extracting video preview for task ${taskId}:`, error);
-      return null;
-    }
   };
 
   const deleteSelectedVideos = async () => {
@@ -1262,16 +1238,33 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
                     <h4 className="text-md font-semibold text-gray-700 mb-4">Video Generation Progress</h4>
                     
                     {/* Completed Videos with Previews */}
-                    {videoTasks.some(task => task.status === 'downloaded' && task.previewUrl) && (
+                    {videoTasks.some(task => task.status === 'downloaded' && (task.videoUrl || task.previewUrl)) && (
                       <div className="mb-6">
                         <div className="flex items-center justify-between mb-3">
                           <h5 className="text-sm font-medium text-gray-700">
-                            Generated Videos ({videoTasks.filter(task => task.status === 'downloaded' && task.previewUrl).length})
+                            Generated Videos ({videoTasks.filter(task => task.status === 'downloaded' && (task.videoUrl || task.previewUrl)).length})
                           </h5>
                           {selectedVideos.size > 0 && (
                             <div className="flex gap-2">
                               <MaterialSubmissionButton
-                                videoTasks={videoTasks.filter(task => selectedVideos.has(task.taskId || '') && task.status === 'downloaded')}
+                                videoTasks={videoTasks.filter(task => {
+                                  const isSelected = selectedVideos.has(task.taskId || '');
+                                  const isDownloaded = task.status === 'downloaded';
+                                  const hasVideo = !!(task.videoUrl || task.previewUrl);
+                                  
+                                  console.log(`🎬 Material submission filter for ${task.imageName}:`, {
+                                    taskId: task.taskId,
+                                    isSelected,
+                                    isDownloaded,
+                                    hasVideo,
+                                    status: task.status,
+                                    videoUrl: task.videoUrl,
+                                    previewUrl: task.previewUrl,
+                                    willInclude: isSelected && isDownloaded && hasVideo
+                                  });
+                                  
+                                  return isSelected && isDownloaded && hasVideo;
+                                })}
                                 productId={parseInt(productId)}
                                 productName={product?.name || 'Unknown Product'}
                                 folderName={folderName}
@@ -1298,24 +1291,19 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
                         {/* Video Preview Grid */}
                         <div className="grid grid-cols-3 gap-3">
                           {videoTasks
-                            .filter(task => task.status === 'downloaded' && task.previewUrl)
+                            .filter(task => task.status === 'downloaded' && (task.videoUrl || task.previewUrl))
                             .map((video, index) => {
                               const isSelected = selectedVideos.has(video.taskId || '');
                               
-                              // Determine preview type based on URL patterns
-                              const isVideoPreview = video.previewUrl === `/${video.relativePath}`;
+                              // Always use original source image as preview (simpler and more reliable)
                               const originalImage = addedImages.find(img => img.filename === video.imageName);
-                              const isOriginalImagePreview = video.previewUrl === originalImage?.url;
-                              const isExtractedFrame = !isVideoPreview && !isOriginalImagePreview;
                               
                               console.log(`🖼️ Video preview debug for ${video.imageName}:`, {
                                 taskId: video.taskId,
+                                videoUrl: video.videoUrl,
                                 previewUrl: video.previewUrl,
-                                relativePath: video.relativePath,
-                                imageUrl: video.imageUrl,
-                                isVideoPreview,
-                                isOriginalImagePreview,
-                                originalImageUrl: originalImage?.url
+                                originalImageUrl: originalImage?.url,
+                                usingOriginalAsPreview: true
                               });
                               
                               return (
@@ -1325,36 +1313,39 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
                                       isSelected ? 'border-blue-500' : 'border-transparent'
                                     }`}
                                     onClick={() => handleVideoClick(video)}
-                                    onDoubleClick={() => handleVideoDoubleClick(video)}
                                   >
-                                    {isVideoPreview ? (
-                                      // Use video element as preview (muted, first frame)
-                                      <video
-                                        src={video.previewUrl}
-                                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-200"
-                                        muted
-                                        preload="metadata"
-                                        onError={() => console.error('Video preview failed to load:', video.previewUrl)}
-                                      />
-                                    ) : (
-                                      // Use image as preview (either extracted frame or original image)
-                                      <img
-                                        src={video.previewUrl}
-                                        alt={`Video preview ${index + 1}`}
-                                        className="w-full h-full object-cover hover:scale-105 transition-transform duration-200"
-                                        onError={(e) => {
-                                          console.error('Image preview failed to load:', video.previewUrl);
-                                          console.log('Trying original image as fallback...');
-                                          if (originalImage?.url && video.previewUrl !== originalImage.url) {
-                                            (e.target as HTMLImageElement).src = originalImage.url;
-                                          }
-                                        }}
-                                      />
-                                    )}
+                                    {/* Always use image preview (original source image) */}
+                                    <img
+                                      src={video.previewUrl || originalImage?.url || ''}
+                                      alt={`Video preview ${index + 1}`}
+                                      className="w-full h-full object-cover hover:scale-105 transition-transform duration-200"
+                                      onError={(e) => {
+                                        console.error('Image preview failed to load:', video.previewUrl);
+                                        // Fallback to original image if preview URL fails
+                                        if (originalImage?.url && video.previewUrl !== originalImage.url) {
+                                          console.log('Trying original image as fallback');
+                                          (e.target as HTMLImageElement).src = originalImage.url;
+                                        } else {
+                                          console.error('No fallback image available for:', video.imageName);
+                                          // Show placeholder or error state
+                                          (e.target as HTMLImageElement).style.display = 'none';
+                                          const placeholder = document.createElement('div');
+                                          placeholder.className = 'w-full h-full bg-gray-300 flex items-center justify-center text-gray-500 text-xs';
+                                          placeholder.textContent = 'Image unavailable';
+                                          e.currentTarget.appendChild(placeholder);
+                                        }
+                                      }}
+                                    />
                                     
-                                    {/* Video Play Icon Overlay */}
-                                    <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-20 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
-                                      <div className="w-12 h-12 bg-black bg-opacity-50 rounded-full flex items-center justify-center">
+                                    {/* Video Play Icon Overlay - Only covers the center button */}
+                                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
+                                      <div 
+                                        className="w-12 h-12 bg-black bg-opacity-50 rounded-full flex items-center justify-center hover:bg-opacity-70 transition-all duration-200 cursor-pointer pointer-events-auto"
+                                        onClick={(e) => {
+                                          e.stopPropagation(); // Prevent triggering video selection
+                                          handleVideoDoubleClick(video); // Open video preview modal
+                                        }}
+                                      >
                                         <svg className="w-6 h-6 text-white ml-1" fill="currentColor" viewBox="0 0 20 20">
                                           <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
                                         </svg>
@@ -1362,11 +1353,9 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
                                     </div>
                                     
                                     {/* Preview type indicator */}
-                                    {(isVideoPreview || isOriginalImagePreview) && (
-                                      <div className="absolute bottom-1 left-1 px-1 py-0.5 bg-black bg-opacity-50 rounded text-xs text-white">
-                                        {isVideoPreview ? 'Video' : 'Original'}
-                                      </div>
-                                    )}
+                                    <div className="absolute bottom-1 left-1 px-1 py-0.5 bg-black bg-opacity-50 rounded text-xs text-white">
+                                      Original
+                                    </div>
                                     
                                     {/* Selection indicator */}
                                     {isSelected && (
@@ -1398,9 +1387,11 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
                         </div>
 
                         <div className="text-xs text-gray-500 mt-3">
-                          💡 Single click to select, double click to view full video, hover to see delete button (🗑️)
+                          💡 Single click to select, click play button (▶️) to view full video, hover to see delete button (🗑️)
                           <br />
-                          🖼️ Preview shows: extracted frame (best) → original image (fallback) → video frame (last resort)
+                          🎬 Preview: Always shows original source image used to generate the video (reliable & consistent)
+                          <br />
+                          📋 Selected: {selectedVideos.size} video(s) ready for material submission
                         </div>
                       </div>
                     )}
@@ -1553,9 +1544,9 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
               ✕
             </button>
             <div className="relative w-full h-full">
-              {previewVideo.relativePath ? (
+              {previewVideo.videoUrl ? (
                 <video
-                  src={`/${previewVideo.relativePath}`}
+                  src={previewVideo.videoUrl}
                   controls
                   autoPlay
                   loop
@@ -1563,9 +1554,9 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
                 >
                   Your browser does not support the video tag.
                 </video>
-              ) : previewVideo.videoUrl ? (
+              ) : previewVideo.relativePath ? (
                 <video
-                  src={previewVideo.videoUrl}
+                  src={`/${previewVideo.relativePath}`}
                   controls
                   autoPlay
                   loop
@@ -1582,10 +1573,10 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
             <div className="text-center mt-4 text-white">
               <p className="text-sm opacity-75">{previewVideo.imageName}</p>
               <p className="text-xs opacity-50 mt-1">Generated Video</p>
-              {previewVideo.relativePath && (
+              {previewVideo.videoUrl && (
                 <a
-                  href={`/${previewVideo.relativePath}`}
-                  download
+                  href={previewVideo.videoUrl}
+                  download={`${previewVideo.imageName}.mp4`}
                   className="inline-block mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm"
                 >
                   Download Video
