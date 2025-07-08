@@ -160,7 +160,7 @@ export async function POST(request: NextRequest) {
 
     // Prepare request data
     const requestData = {
-      req_key: 'jimeng_vgfm_t2v_l20',
+      req_key: "doubao-seedance-1-0-lite-i2v-250428",
       prompt: prompt,
       seed: seed,
       aspect_ratio: aspectRatio,
