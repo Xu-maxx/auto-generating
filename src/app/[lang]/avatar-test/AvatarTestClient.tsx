@@ -487,19 +487,19 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
       
       console.log(`🎬 Video status check for ${videoId}:`, data);
       
-      if (data.success || (data.code === 100 && data.data)) {
-        // Extract the actual video data - handle different API response structures
-        const videoData = data.data || data;
-        const videoStatus = videoData.status;
-        const videoUrl = videoData.video_url || videoData.videoUrl;
-        const thumbnailUrl = videoData.thumbnail_url || videoData.thumbnailUrl;
-        const duration = videoData.duration;
+      if (data.success) {
+        // Use the consistent response structure from our fixed API endpoint
+        const videoStatus = data.status;
+        const videoUrl = data.videoUrl;
+        const thumbnailUrl = data.thumbnailUrl;
+        const duration = data.duration;
         
         console.log(`📊 Extracted video data for ${videoId}:`, {
           status: videoStatus,
           hasVideoUrl: !!videoUrl,
           hasThumbnailUrl: !!thumbnailUrl,
-          duration: duration
+          duration: duration,
+          shouldStopPolling: videoStatus === 'completed' || videoStatus === 'failed'
         });
         
         // Get current session data directly to avoid dependency loops
@@ -515,7 +515,7 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
                 videoUrl: videoUrl || video.videoUrl,
                 thumbnailUrl: thumbnailUrl || video.thumbnailUrl,
                 duration: duration || video.duration,
-                videoData: videoData || video.videoData
+                videoData: data.data || video.videoData
               };
               
               console.log(`🔄 Updated video ${videoId}:`, updatedVideo);
@@ -590,8 +590,7 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
     } catch (error) {
       console.error('Error checking video status:', error);
     }
-  }, [setAvatarSession, saveCompleteSessionState, clearVideoStatusInterval, generatedVideos, 
-      setIsGeneratingVideo, setVideoGenerationStatus]);
+  }, [clearVideoStatusInterval, setAvatarSession, saveCompleteSessionState, generatedVideos, setIsGeneratingVideo, setVideoGenerationStatus, setSuccessNotification, setError]);
 
   // Custom video status interval management
   const startVideoStatusIntervalWithSessionUpdate = useCallback((videoId: string) => {

@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { VideoGenerationTask } from '@/types/session';
+import { SelectedTag } from '@/types/tag';
+import { TagService } from '@/utils/tagService';
 import MaterialVideoSubmissionHelper, { MaterialVideoSubmissionOptions } from '@/utils/materialVideoSubmission';
 import MaterialSubmissionService from '@/utils/materialSubmission';
 import ApiClient from '@/utils/apiClient';
@@ -8,7 +10,7 @@ interface MaterialSubmissionButtonProps {
   videoTasks: VideoGenerationTask[];
   productId: number;
   productName: string;
-  folderName: string; // Use folder name as tags
+  selectedTags: SelectedTag[]; // Updated to use selected tags
   disabled?: boolean;
   onSubmissionComplete?: (results: any[]) => void;
   onSubmissionError?: (error: string) => void;
@@ -18,13 +20,14 @@ const MaterialSubmissionButton: React.FC<MaterialSubmissionButtonProps> = ({
   videoTasks,
   productId,
   productName,
-  folderName,
+  selectedTags,
   disabled = false,
   onSubmissionComplete,
   onSubmissionError
 }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submissionProgress, setSubmissionProgress] = useState<string>('');
+  const tagService = TagService.getInstance();
 
   const handleSubmitMaterials = async () => {
     if (isSubmitting) return;
@@ -59,8 +62,8 @@ const MaterialSubmissionButton: React.FC<MaterialSubmissionButtonProps> = ({
       return;
     }
 
-    if (!folderName.trim()) {
-      alert('Please enter a folder name first (this will be used as tags)');
+    if (selectedTags.length === 0) {
+      alert('Please select at least one tag first');
       return;
     }
 
@@ -68,85 +71,60 @@ const MaterialSubmissionButton: React.FC<MaterialSubmissionButtonProps> = ({
     const apiClient = ApiClient.getInstance();
     const token = apiClient.getToken();
     
-    console.log('🔍 DEBUG: Token check:', {
-      hasToken: !!token,
-      tokenLength: token ? token.length : 0,
-      tokenPreview: token ? token.substring(0, 20) + '...' : 'No token'
-    });
-
     if (!token) {
-      const errorMessage = 'Authentication token is missing. Please login again.';
-      alert(errorMessage);
-      onSubmissionError?.(errorMessage);
+      alert('Please login first');
       return;
     }
 
-    // Test token validity with a simple request
-    console.log('🔍 DEBUG: Testing token validity with products API...');
-    try {
-      const testResponse = await fetch('/api/products?pageSize=1', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      
-      console.log('🔍 DEBUG: Token test response:', {
-        status: testResponse.status,
-        ok: testResponse.ok
-      });
-      
-      if (!testResponse.ok) {
-        const errorMessage = 'Authentication token is invalid or expired. Please login again.';
-        alert(errorMessage);
-        onSubmissionError?.(errorMessage);
-        return;
-      }
-      
-      const testResult = await testResponse.json();
-      console.log('🔍 DEBUG: Token test result:', {
-        success: testResult.success,
-        error: testResult.error
-      });
-      
-      if (!testResult.success) {
-        const errorMessage = 'Authentication token is invalid or expired. Please login again.';
-        alert(errorMessage);
-        onSubmissionError?.(errorMessage);
-        return;
-      }
-      
-      console.log('✅ DEBUG: Token validation successful, proceeding with material submission...');
-    } catch (tokenTestError) {
-      console.error('❌ DEBUG: Token test failed:', tokenTestError);
-      const errorMessage = 'Failed to validate authentication token. Please login again.';
-      alert(errorMessage);
-      onSubmissionError?.(errorMessage);
-      return;
-    }
+    console.log('🔍 DEBUG: Current API token status:', {
+      hasToken: !!token,
+      tokenPreview: token ? token.substring(0, 30) + '...' : 'No token'
+    });
 
-    // Use folder name as tags, clean it for API requirements
-    const tags = folderName.trim().replace(/[^a-zA-Z0-9\u4e00-\u9fa5,]/g, '').replace(/\s+/g, ',');
+    const completedCount = completedTasks.length;
     
-    console.log('🔍 DEBUG: Processed tags:', {
-      originalFolderName: folderName,
-      processedTags: tags
+    // Convert selected tags to comma-separated string for API
+    // Safety check: Filter to only leaf tags before converting
+    // This ensures we only submit selectable tags even if somehow a non-leaf tag was selected
+    const tagService = TagService.getInstance();
+    
+    // Try tag IDs first (numbers only), then fallback to tag names if needed
+    const tagIds = tagService.convertSelectedTagsToIdString(selectedTags);
+    const tagNames = tagService.convertSelectedTagsToString(selectedTags);
+    
+    console.log('🔍 DEBUG: Processed tags for API submission:', {
+      originalSelectedTags: selectedTags.map(tag => ({ 
+        id: tag.id, 
+        name: tag.name, 
+        parentName: tag.parentName 
+      })),
+      tagIdsString: tagIds,
+      tagNamesString: tagNames,
+      tagCount: selectedTags.length,
+      willTryTagIdsFirst: true
     });
     
-    // Validate tags format
-    if (!MaterialSubmissionService.validateTags(tags)) {
-      alert('Invalid folder name format. Only Chinese, English, numbers, and commas are allowed');
+    // Validate both formats
+    if (!tagService.validateTagIdsString(tagIds)) {
+      alert('Invalid tag IDs format. Only numbers and commas are allowed');
+      return;
+    }
+    
+    if (!tagService.validateTagsString(tagNames)) {
+      alert('Invalid tag names format. Only Chinese, English, numbers, and commas are allowed');
       return;
     }
 
     setIsSubmitting(true);
     setSubmissionProgress('Preparing submission...');
 
-    try {
+    // Helper function to attempt submission with specific tags format
+    const attemptSubmission = async (tags: string, format: 'IDs' | 'Names') => {
       const submissionHelper = MaterialVideoSubmissionHelper.getInstance();
 
       const options: MaterialVideoSubmissionOptions = {
         productId,
-        materialType: 'material', // This will be converted to 4001 (空境)
+        materialType: 'material', // This will be converted to 4001 (空境) for video materials
         tags,
         onProgress: (status, details) => {
           setSubmissionProgress(status);
@@ -158,15 +136,53 @@ const MaterialSubmissionButton: React.FC<MaterialSubmissionButtonProps> = ({
         }
       };
 
-      console.log('Starting material submission with options:', {
-        ...options,
-        materialType: '4001 (空境)',
-        fileType: '1002 (mp4)',
-        completedVideos: completedTasks.length,
-        tagsFromFolderName: tags
+      console.log(`🚀 Attempting material submission with tag ${format} according to 接口.txt API specification:`, {
+        endpoint: '/system/materialMgt/preSubmitGeneratedMaterial',
+        requestBody: {
+          materialType: 4001, // 空境 (video materials)
+          materialFileType: 1002, // mp4 format
+          productId: productId,
+          tags: tags
+        },
+        completedVideosCount: completedTasks.length,
+        selectedTagsCount: selectedTags.length,
+        tagsPreview: tags.length > 50 ? tags.substring(0, 50) + '...' : tags,
+        format: format
       });
       
-      const results = await submissionHelper.submitMultipleVideos(completedTasks, options);
+      return await submissionHelper.submitMultipleVideos(completedTasks, options);
+    };
+
+    try {
+      let results;
+      
+      try {
+        // First attempt: Try with tag IDs (numbers only)
+        setSubmissionProgress('Trying submission with tag IDs...');
+        results = await attemptSubmission(tagIds, 'IDs');
+        console.log('✅ Material submission successful with tag IDs');
+      } catch (firstError) {
+        console.log('⚠️ First attempt with tag IDs failed:', firstError);
+        
+        // Check if it's a parsing error that might be resolved with tag names
+        const errorMessage = firstError instanceof Error ? firstError.message : String(firstError);
+        if (errorMessage.includes('For input string') || errorMessage.includes('parsing') || errorMessage.includes('400')) {
+          console.log('🔄 Retrying with tag names...');
+          setSubmissionProgress('Retrying submission with tag names...');
+          
+          try {
+            // Second attempt: Try with tag names (Chinese text)
+            results = await attemptSubmission(tagNames, 'Names');
+            console.log('✅ Material submission successful with tag names');
+          } catch (secondError) {
+            console.error('❌ Both submission attempts failed:', { firstError, secondError });
+            throw secondError; // Throw the second error if both attempts fail
+          }
+        } else {
+          // If it's not a parsing error, don't retry
+          throw firstError;
+        }
+      }
       
       console.log('Material submission results:', results);
       
@@ -185,21 +201,31 @@ const MaterialSubmissionButton: React.FC<MaterialSubmissionButtonProps> = ({
       }
       
     } catch (error) {
-      console.error('Material submission error:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      setSubmissionProgress(`Error: ${errorMessage}`);
-      onSubmissionError?.(errorMessage);
+      console.error('Error submitting materials:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      
+      // Provide more specific error messages for tag-related issues
+      let userFriendlyMessage = errorMessage;
+      if (errorMessage.includes('For input string') || errorMessage.includes('parsing')) {
+        userFriendlyMessage = 'Tag format issue: Both tag IDs and tag names failed. Please try selecting different tags or contact support.';
+      } else if (errorMessage.includes('400')) {
+        userFriendlyMessage = 'API validation error: Please check your tag selection and try again.';
+      } else if (errorMessage.includes('401')) {
+        userFriendlyMessage = 'Authentication error: Please login again and try submitting.';
+      }
+      
+      setSubmissionProgress(`Error: ${userFriendlyMessage}`);
+      onSubmissionError?.(userFriendlyMessage);
     } finally {
       setIsSubmitting(false);
       
-      // Clear progress after 3 seconds
+      // Clear progress after 5 seconds
       setTimeout(() => {
         setSubmissionProgress('');
-      }, 3000);
+      }, 5000);
     }
   };
 
-  // Since videoTasks are already filtered to selected downloaded videos, use them directly
   const completedCount = videoTasks.filter(task => task.status === 'downloaded' && (task.relativePath || task.localPath || task.videoUrl)).length;
 
   return (
@@ -210,18 +236,29 @@ const MaterialSubmissionButton: React.FC<MaterialSubmissionButtonProps> = ({
           Product: {productName} (ID: {productId})
         </p>
         <p className="text-sm text-blue-700 mb-1">
-          Type: 4001 (空境) | Format: 1002 (mp4)
+          API: /system/materialMgt/preSubmitGeneratedMaterial
+        </p>
+        <p className="text-sm text-blue-700 mb-1">
+          Type: 4001 (空境 - Video Materials) | Format: 1002 (mp4)
         </p>
         <p className="text-sm text-blue-700">
-          Tags: {folderName || 'Enter folder name first'}
+          Tags: {selectedTags.length > 0 ? (
+            <span title={selectedTags.map(tag => tag.name).join(', ')}>
+              {selectedTags.length} leaf tags selected
+              {selectedTags.length <= 3 && ` (${selectedTags.map(tag => tag.name).join(', ')})`}
+            </span>
+          ) : 'No tags selected'}
+        </p>
+        <p className="text-xs text-blue-600 mt-1">
+          💡 System will try tag IDs first, then tag names if needed
         </p>
       </div>
 
       <button
         onClick={handleSubmitMaterials}
-        disabled={disabled || isSubmitting || completedCount === 0 || !folderName.trim()}
+        disabled={disabled || isSubmitting || completedCount === 0 || selectedTags.length === 0}
         className={`w-full px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
-          disabled || isSubmitting || completedCount === 0 || !folderName.trim()
+          disabled || isSubmitting || completedCount === 0 || selectedTags.length === 0
             ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
             : 'bg-green-600 hover:bg-green-700 text-white'
         }`}
@@ -244,9 +281,11 @@ const MaterialSubmissionButton: React.FC<MaterialSubmissionButtonProps> = ({
         </div>
       )}
 
-      {!folderName.trim() && (
-        <div className="text-sm text-yellow-600 text-center">
-          Enter a folder name to enable submission
+      {selectedTags.length === 0 && (
+        <div className="text-sm text-yellow-600 text-center bg-yellow-50 p-2 rounded border border-yellow-200">
+          ⚠️ Select at least one leaf tag to enable submission
+          <br />
+          <span className="text-xs">Only specific categories (leaf tags) can be selected for materials</span>
         </div>
       )}
     </div>

@@ -336,10 +336,11 @@ export default function ProductPageClient({ params, dict }: ProductPageClientPro
         </div>
 
         {/* Video Creation Options */}
-        {productStyle && (
-          <div className="bg-white rounded-lg shadow-sm border p-6">
-            <h2 className="text-xl font-semibold mb-4">Video Creation</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white rounded-lg shadow-sm border p-6">
+          <h2 className="text-xl font-semibold mb-4">Video Creation</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Avatar Video - requires product style */}
+            {productStyle ? (
               <button
                 onClick={handleCreateAvatarVideo}
                 className="bg-green-600 hover:bg-green-700 text-white px-6 py-4 rounded-lg font-medium transition-colors text-left"
@@ -347,16 +348,29 @@ export default function ProductPageClient({ params, dict }: ProductPageClientPro
                 <div className="text-lg font-semibold mb-2">Create Avatar Video</div>
                 <div className="text-sm text-green-100">Generate video with digital avatar</div>
               </button>
-              <button
-                onClick={handleCreateMaterialVideo}
-                className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-lg font-medium transition-colors text-left"
-              >
-                <div className="text-lg font-semibold mb-2">Create Material Video</div>
-                <div className="text-sm text-purple-100">Generate product material video</div>
-              </button>
-            </div>
+            ) : (
+              <div className="bg-gray-100 border-2 border-dashed border-gray-300 px-6 py-4 rounded-lg text-center">
+                <div className="text-lg font-semibold mb-2 text-gray-500">Create Avatar Video</div>
+                <div className="text-sm text-gray-400 mb-3">Requires product style setup</div>
+                <button
+                  onClick={() => setShowStyleForm(true)}
+                  className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded text-sm font-medium transition-colors"
+                >
+                  Set Up Style First
+                </button>
+              </div>
+            )}
+            
+            {/* Material Video - always available */}
+            <button
+              onClick={handleCreateMaterialVideo}
+              className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-lg font-medium transition-colors text-left"
+            >
+              <div className="text-lg font-semibold mb-2">Create Material Video</div>
+              <div className="text-sm text-purple-100">Generate product material video</div>
+            </button>
           </div>
-        )}
+        </div>
 
         {/* Style Form Modal */}
         {showStyleForm && (

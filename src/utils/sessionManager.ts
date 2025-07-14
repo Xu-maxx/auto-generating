@@ -30,6 +30,7 @@ export class SessionManager {
       imageDataUrl: '',
       videoPrompt: '',
       folderName: '',
+      selectedTags: [], // Initialize selectedTags as empty array
       aspectRatio: '16:9',
       
       // Image generation settings
@@ -112,6 +113,7 @@ export class SessionManager {
       imageDataUrl: '',
       videoPrompt: '',
       folderName: '',
+      selectedTags: [], // Initialize selectedTags as empty array
       aspectRatio: '16:9',
       
       // Image generation settings
@@ -238,6 +240,7 @@ export class SessionManager {
           imageDataUrl: sessionData.imageDataUrl || '',
           videoPrompt: sessionData.videoPrompt || '',
           folderName: sessionData.folderName || '',
+          selectedTags: sessionData.selectedTags || [], // Initialize selectedTags as empty array
           aspectRatio: sessionData.aspectRatio || '16:9',
           
           // Image generation settings

@@ -48,6 +48,8 @@ export interface PromptWithSpec {
   failedCount?: number;
 }
 
+import { SelectedTag } from './tag';
+
 export interface SessionData {
   id: string;
   projectId: string; // Link to parent project
@@ -58,7 +60,8 @@ export interface SessionData {
   // Form states
   imageDataUrl: string;
   videoPrompt: string;
-  folderName: string;
+  folderName: string; // Keep for backward compatibility
+  selectedTags: SelectedTag[]; // New tag selection system
   aspectRatio: string;
   
   // Image generation settings

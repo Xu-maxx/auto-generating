@@ -1,5 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// Helper function to create a timeout promise
+const createTimeoutPromise = (ms: number): Promise<never> => {
+  return new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(`Request timeout after ${ms}ms`)), ms);
+  });
+};
+
+// Helper function to attempt upload with retry logic
+const uploadWithRetry = async (url: string, options: RequestInit, maxRetries: number = 3): Promise<Response> => {
+  let lastError: Error = new Error('Unknown error occurred');
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Upload attempt ${attempt}/${maxRetries}`);
+      
+      // Create fetch promise with 60-second timeout (more reasonable for file uploads)
+      const fetchPromise = fetch(url, options);
+      const timeoutPromise = createTimeoutPromise(60000); // 60 seconds
+      
+      const response = await Promise.race([fetchPromise, timeoutPromise]);
+      
+      // If we get here, the request succeeded
+      return response;
+    } catch (error) {
+      lastError = error as Error;
+      console.error(`Upload attempt ${attempt} failed:`, error);
+      
+      // If it's not the last attempt, wait before retrying
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000; // Exponential backoff: 2s, 4s, 8s
+        console.log(`Waiting ${delay}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  throw lastError;
+};
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -22,6 +61,14 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
+    // Validate file size (HeyGen typically has size limits)
+    const maxSizeInBytes = 10 * 1024 * 1024; // 10MB
+    if (file.size > maxSizeInBytes) {
+      return NextResponse.json({ 
+        error: `File too large: ${(file.size / 1024 / 1024).toFixed(2)}MB. Maximum allowed: 10MB.` 
+      }, { status: 400 });
+    }
+
     console.log('Uploading asset to HeyGen:', {
       filename: file.name,
       type: file.type,
@@ -31,8 +78,8 @@ export async function POST(request: NextRequest) {
     // Convert file to buffer
     const buffer = await file.arrayBuffer();
 
-    // Upload to HeyGen with the file's actual content type
-    const response = await fetch('https://upload.heygen.com/v1/asset', {
+    // Upload to HeyGen with retry logic and proper timeout
+    const response = await uploadWithRetry('https://upload.heygen.com/v1/asset', {
       method: 'POST',
       headers: {
         'Content-Type': file.type, // Use the file's actual content type
@@ -80,9 +127,24 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error('Error uploading asset to HeyGen:', error);
+    
+    // Provide more specific error messages based on error type
+    let errorMessage = 'Failed to upload asset to HeyGen';
+    let statusCode = 500;
+    
+    if (error instanceof Error) {
+      if (error.message.includes('timeout')) {
+        errorMessage = 'Upload timeout - please try again with a smaller file or check your connection';
+        statusCode = 408; // Request Timeout
+      } else if (error.message.includes('fetch failed')) {
+        errorMessage = 'Network connection failed - please check your internet connection';
+        statusCode = 503; // Service Unavailable
+      }
+    }
+    
     return NextResponse.json(
-      { error: 'Failed to upload asset to HeyGen' },
-      { status: 500 }
+      { error: errorMessage, details: error instanceof Error ? error.message : String(error) },
+      { status: statusCode }
     );
   }
 } 

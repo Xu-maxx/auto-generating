@@ -7,8 +7,10 @@ import PromptGenerator from '@/components/PromptGenerator';
 import SessionSidebar from '@/components/SessionSidebar';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import MaterialSubmissionButton from '@/components/MaterialSubmissionButton';
+import TagSelector from '@/components/TagSelector';
 import { useProjectSession } from '@/hooks/useProjectSession';
 import { GeneratedImage, VideoGenerationTask, PromptWithSpec, ConversationMessage, ReferenceImage } from '@/types/session';
+import { SelectedTag } from '@/types/tag';
 import { ProjectData } from '@/types/project';
 import {
   detectImageDimensions,
@@ -127,6 +129,7 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
   const referenceImages = currentSession?.referenceImages || [];
   const videoPrompt = currentSession?.videoPrompt || '';
   const folderName = currentSession?.folderName || '';
+  const selectedTags = currentSession?.selectedTags || [];
   const aspectRatio = currentSession?.aspectRatio || '16:9';
   const imageAspectRatio = currentSession?.imageAspectRatio || '16:9';
   const imageResolution = currentSession?.imageResolution || {width: 1920, height: 1080};
@@ -139,16 +142,8 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
   // Update ref whenever videoTasks change
   currentVideoTasksRef.current = videoTasks;
 
-  // Sync session name with folder name when session loads
-  useEffect(() => {
-    if (currentSession && folderName) {
-      const expectedSessionName = folderName.trim() || 'untitled';
-      if (currentSession.name !== expectedSessionName) {
-        console.log(`🏷️ Syncing session name: "${currentSession.name}" → "${expectedSessionName}"`);
-        updateSession({ name: expectedSessionName });
-      }
-    }
-  }, [currentSession?.id, folderName, updateSession]);
+  // Remove the conflicting useEffect hooks that were causing infinite loop
+  // Session name updates are now handled directly in setFolderName and setSelectedTags
 
   // Debug: Monitor videoTasks changes
   useEffect(() => {
@@ -177,10 +172,23 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
   };
 
   const setFolderName = (name: string) => {
-    // Update both folder name and session name to keep them in sync
-    const sessionName = name.trim() || 'untitled';
+    // For backward compatibility: only update session name if no tags are selected
+    const updates: any = { folderName: name };
+    
+    // Only update session name if there are no selected tags (tag system takes priority)
+    if (selectedTags.length === 0) {
+      const sessionName = name.trim() || 'untitled';
+      updates.name = sessionName;
+    }
+    
+    updateSession(updates);
+  };
+
+  const setSelectedTags = (tags: SelectedTag[]) => {
+    // Tag system takes priority for session naming
+    const sessionName = tags.length > 0 ? tags.map(tag => tag.name).join(', ') : 'untitled';
     updateSession({ 
-      folderName: name,
+      selectedTags: tags,
       name: sessionName
     });
   };
@@ -315,8 +323,8 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
       return;
     }
     
-    if (!folderName.trim()) {
-      alert('Please enter a folder name');
+    if (selectedTags.length === 0) {
+      alert('Please select at least one tag');
       return;
     }
     
@@ -341,6 +349,9 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
     
     console.log('🔄 Set isGeneratingVideo to true, starting API call...');
 
+    // Use first tag name as folder name for backward compatibility with video generation API
+    const folderNameForVideoGeneration = selectedTags.length > 0 ? selectedTags[0].name : 'default';
+
     try {
       const response = await fetch('/api/jimeng-video', {
         method: 'POST',
@@ -353,7 +364,7 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
             url: img.url,
             filename: img.filename
           })),
-          folderName: folderName,
+          folderName: folderNameForVideoGeneration,
           aspectRatio: aspectRatio
         }),
       });
@@ -1085,22 +1096,17 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
                       <p className="text-xs text-gray-400 mt-1">{videoPrompt.length}/150 characters</p>
                     </div>
 
-                    {/* Folder Name Input */}
+                    {/* Tag Selection Input */}
                     <div className="mb-3">
                       <label className="block text-xs font-medium text-gray-600 mb-1">
-                        {dict.projectPage.videoGeneration.folderName}
+                        Tags (Select one or more to categorize your material)
                       </label>
-                      <input
-                        type="text"
-                        value={folderName}
-                        onChange={(e) => setFolderName(e.target.value)}
-                        placeholder={dict.projectPage.videoGeneration.folderNamePlaceholder}
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        maxLength={50}
+                      <TagSelector
+                        selectedTags={selectedTags}
+                        onTagSelectionChange={setSelectedTags}
+                        disabled={isApiChannelOccupied || isGeneratingVideo}
+                        className="w-full"
                       />
-                      <p className="text-xs text-gray-500 mt-1">
-                        💡 {dict.projectPage.videoGeneration.folderNameTip}
-                      </p>
                     </div>
 
                     {/* Auto-detected Aspect Ratio Display (Read-only) */}
@@ -1131,7 +1137,7 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
                     {/* Generate Video Button */}
                     <button
                       onClick={generateVideos}
-                      disabled={isApiChannelOccupied || isGeneratingVideo || !videoPrompt.trim() || !folderName.trim()}
+                      disabled={isApiChannelOccupied || isGeneratingVideo || !videoPrompt.trim() || selectedTags.length === 0}
                       className="w-full px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm font-medium mb-3"
                     >
                       {isApiChannelOccupied ? 
@@ -1267,7 +1273,7 @@ export default function MaterialPageClient({ params, dict }: MaterialPageClientP
                                 })}
                                 productId={parseInt(productId)}
                                 productName={product?.name || 'Unknown Product'}
-                                folderName={folderName}
+                                selectedTags={selectedTags}
                                 onSubmissionComplete={(results) => {
                                   console.log('Material submission completed:', results);
                                   // Clear selected videos after successful submission
