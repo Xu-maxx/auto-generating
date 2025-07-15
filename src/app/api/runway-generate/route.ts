@@ -12,6 +12,17 @@ interface GeneratedImage {
 
 export async function POST(request: NextRequest) {
   try {
+    // Enhanced logging for remote connection debugging
+    const clientIP = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown';
+    const userAgent = request.headers.get('user-agent') || 'unknown';
+    
+    console.log('🔍 Runway API Request Debug Info:', {
+      clientIP,
+      userAgent,
+      timestamp: new Date().toISOString(),
+      headers: Object.fromEntries(request.headers.entries())
+    });
+
     const { promptText, imageCount = 4, referenceImages = [], aspectRatio = '16:9', resolution = {width: 1920, height: 1080} } = await request.json();
 
     console.log('Runway API request:', { 
@@ -23,14 +34,24 @@ export async function POST(request: NextRequest) {
       resolutionType: typeof resolution
     });
 
+    // Enhanced validation with detailed error messages
     if (!promptText) {
+      console.error('❌ Validation failed: No prompt text provided');
       return NextResponse.json({ error: 'No prompt text provided' }, { status: 400 });
     }
 
     if (!process.env.RUNWAY_API_KEY) {
-      console.error('Missing RUNWAY_API_KEY environment variable');
+      console.error('❌ Missing RUNWAY_API_KEY environment variable');
       return NextResponse.json({ error: 'Runway API key not configured' }, { status: 500 });
     }
+
+    // Validate environment in remote connection context
+    console.log('🔐 Environment validation:', {
+      hasRunwayKey: !!process.env.RUNWAY_API_KEY,
+      keyPrefix: process.env.RUNWAY_API_KEY?.substring(0, 10),
+      nodeEnv: process.env.NODE_ENV,
+      isRemoteConnection: clientIP !== 'unknown' && !clientIP.includes('127.0.0.1') && !clientIP.includes('localhost')
+    });
 
     console.log('Using Runway API key:', process.env.RUNWAY_API_KEY?.substring(0, 10) + '...');
 
@@ -46,7 +67,7 @@ export async function POST(request: NextRequest) {
         runwayRatio = toRunwayRatio(aspectRatio, resolution);
         console.log(`Converted ratio for task ${i + 1}:`, { aspectRatio, resolution, runwayRatio });
       } catch (ratioError) {
-        console.error('Error converting ratio:', ratioError);
+        console.error('❌ Error converting ratio:', ratioError);
         return NextResponse.json({ 
           error: 'Invalid aspect ratio or resolution format',
           details: { aspectRatio, resolution, error: ratioError instanceof Error ? ratioError.message : 'Unknown error' }
@@ -115,6 +136,9 @@ export async function POST(request: NextRequest) {
         referenceImagesCount: requestBody.referenceImages?.length || 0
       });
       
+      // Enhanced pre-request validation
+      console.log('🚀 Making request to Runway API...');
+      
       const response = await fetch('https://api.dev.runwayml.com/v1/text_to_image', {
         method: 'POST',
         headers: {
@@ -131,27 +155,27 @@ export async function POST(request: NextRequest) {
         let errorData;
         const contentType = response.headers.get('content-type');
         
-        console.log('Error response headers:', Object.fromEntries(response.headers.entries()));
+        console.log('❌ Error response headers:', Object.fromEntries(response.headers.entries()));
         
         if (contentType && contentType.includes('application/json')) {
           try {
             errorData = await response.json();
-            console.log('Runway API JSON error response:', errorData);
+            console.log('❌ Runway API JSON error response:', errorData);
           } catch (e) {
-            console.log('Failed to parse JSON error response:', e);
+            console.log('❌ Failed to parse JSON error response:', e);
             errorData = { message: `HTTP ${response.status}: ${response.statusText}` };
           }
         } else {
           // Handle non-JSON responses (like HTML error pages)
           const textResponse = await response.text();
-          console.error('Runway API returned non-JSON response:', textResponse.substring(0, 500));
+          console.error('❌ Runway API returned non-JSON response:', textResponse.substring(0, 500));
           errorData = { 
             message: `HTTP ${response.status}: ${response.statusText}`,
             details: 'Received HTML response instead of JSON - check API key and endpoint'
           };
         }
         
-        console.error('Runway API error details:', {
+        console.error('❌ Complete Runway API error details:', {
           status: response.status,
           statusText: response.statusText,
           errorData: errorData,
@@ -163,7 +187,8 @@ export async function POST(request: NextRequest) {
               uriLength: img.uri?.length || 0,
               uriType: img.uri?.startsWith('data:') ? 'base64' : 'url'
             }))
-          }
+          },
+          clientInfo: { clientIP, userAgent }
         });
         
         return NextResponse.json({ 
@@ -173,6 +198,7 @@ export async function POST(request: NextRequest) {
       }
 
       const data = await response.json();
+      console.log(`✅ Task ${i + 1} created successfully:`, data.id);
       taskIds.push(data.id);
     }
 
