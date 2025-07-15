@@ -51,6 +51,11 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
   // Ref to track restored sessions to prevent loops
   const restoredSessionsRef = useRef<Set<string>>(new Set());
 
+  // Debounced save mechanism
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingUpdatesRef = useRef<Partial<AvatarSessionData>>({});
+  const lastSaveTimeRef = useRef<number>(0);
+
   // Extract product information from searchParams
   const productId = searchParams?.productId as string;
   const productName = searchParams?.productName as string;
@@ -79,7 +84,7 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
   const conversation = avatarSession?.conversation || [];
   const aspectRatio = avatarSession?.aspectRatio || '16:9';
   const resolution = avatarSession?.resolution || '1024x576';
-  const selectedCombinedOption = avatarSession?.selectedCombinedOption || COMBINED_RATIO_RESOLUTION_OPTIONS.find(opt => opt.id === '16:9-1024x576') || COMBINED_RATIO_RESOLUTION_OPTIONS[0];
+  const selectedCombinedOption = avatarSession?.selectedCombinedOption || COMBINED_RATIO_RESOLUTION_OPTIONS[0];
 
   // Sync local video text with session when session changes
   useEffect(() => {
@@ -111,26 +116,104 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
     waitForAvatarsCompletion
   } = useVideoGeneration();
 
-  // Session state updaters
+  // Check if video generation is complete
+  const isVideoGenerationComplete = useCallback(() => {
+    if (!avatarSession) return false;
+    
+    // Check if there are any pending video generations
+    const hasActiveVideoGeneration = generatedVideos.some(video => 
+      video.status === 'processing' || video.status === 'submitted'
+    );
+    
+    // Check session processing flags
+    const hasSessionProcessing = avatarSession.isGeneratingVideo || 
+                                avatarSession.isAddingMotion || 
+                                avatarSession.isUploading;
+    
+    return !hasActiveVideoGeneration && !hasSessionProcessing;
+  }, [avatarSession, generatedVideos]);
+
+  // Improved session state updater with debouncing
   const updateAvatarSession = useCallback(async (updates: Partial<AvatarSessionData>) => {
+    // Update local state immediately for UI responsiveness
     setAvatarSession(prevSession => {
       if (!prevSession) return prevSession;
-      
-      const updatedSession = { ...prevSession, ...updates, updatedAt: new Date().toISOString() };
-      
-      // Save to backend asynchronously without blocking the UI
-      saveCompleteSessionState(updatedSession).catch(error => {
-        console.error('Failed to save session updates:', error);
-      });
-      
-      return updatedSession;
+      return { ...prevSession, ...updates, updatedAt: new Date().toISOString() };
     });
-  }, [saveCompleteSessionState]);
+
+    // Accumulate pending updates
+    pendingUpdatesRef.current = { ...pendingUpdatesRef.current, ...updates };
+
+    // Clear existing timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    // Don't save if video generation is complete and no meaningful changes
+    if (isVideoGenerationComplete() && !hasMeaningfulChanges(updates)) {
+      console.log('⏸️ Skipping save - video generation complete and no meaningful changes');
+      return;
+    }
+
+    // Don't save too frequently
+    const now = Date.now();
+    const timeSinceLastSave = now - lastSaveTimeRef.current;
+    const minInterval = 5000; // Minimum 5 seconds between saves
+
+    if (timeSinceLastSave < minInterval) {
+      console.log('⏸️ Debouncing save - too frequent');
+      // Set up debounced save
+      saveTimeoutRef.current = setTimeout(() => {
+        performDebouncedSave();
+      }, minInterval - timeSinceLastSave);
+    } else {
+      // Save immediately if enough time has passed
+      saveTimeoutRef.current = setTimeout(() => {
+        performDebouncedSave();
+      }, 2000); // Save after 2 seconds of inactivity
+    }
+  }, [avatarSession, isVideoGenerationComplete, saveCompleteSessionState]);
+
+  // Helper function to check if changes are meaningful
+  const hasMeaningfulChanges = (updates: Partial<AvatarSessionData>) => {
+    const meaningfulFields = [
+      'existingImages', 'selectedAvatars', 'generatedVideos', 'avatarDescription',
+      'videoText', 'avatarPrompts', 'conversation', 'aspectRatio', 'resolution'
+    ];
+    return meaningfulFields.some(field => field in updates);
+  };
+
+  // Perform the actual debounced save
+  const performDebouncedSave = useCallback(async () => {
+    if (!avatarSession) return;
+
+    const updatesToSave = { ...pendingUpdatesRef.current };
+    pendingUpdatesRef.current = {}; // Clear pending updates
+
+    if (Object.keys(updatesToSave).length === 0) {
+      console.log('⏸️ No updates to save');
+      return;
+    }
+
+    try {
+      const updatedSessionData = {
+        ...avatarSession,
+        ...updatesToSave,
+        updatedAt: new Date().toISOString()
+      };
+
+      await saveCompleteSessionState(updatedSessionData);
+      lastSaveTimeRef.current = Date.now();
+      console.log('💾 Session state saved successfully (debounced)');
+    } catch (error) {
+      console.error('❌ Error saving session state:', error);
+    }
+  }, [avatarSession, saveCompleteSessionState]);
 
   // Save processing states to session (NEW: to preserve ongoing operations)
   const saveProcessingStates = useCallback(async () => {
     if (!avatarSession) return;
-    
+
     const processingStates = {
       isGeneratingVideo,
       videoGenerationStatus,
@@ -140,24 +223,116 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
       uploadStatus,
       lastProcessingUpdate: new Date().toISOString()
     };
-    
-    // Only save if there are actual processing states to preserve
-    if (isGeneratingVideo || isAddingMotion || isUploading || 
-        videoGenerationStatus || motionStatus || uploadStatus) {
-      console.log('💾 Saving processing states to session:', processingStates);
-      await updateAvatarSession(processingStates);
-    }
+
+    await updateAvatarSession(processingStates);
   }, [avatarSession, isGeneratingVideo, videoGenerationStatus, isAddingMotion, 
       motionStatus, isUploading, uploadStatus, updateAvatarSession]);
 
-  // Auto-save processing states when they change
+  // Auto-save processing states periodically during active operations
   useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      saveProcessingStates();
-    }, 1000); // Save 1 second after processing state changes
+    if (isGeneratingVideo || isAddingMotion || isUploading) {
+      const interval = setInterval(saveProcessingStates, 10000); // Save every 10 seconds during processing
+      return () => clearInterval(interval);
+    }
+  }, [isGeneratingVideo, isAddingMotion, isUploading, saveProcessingStates]);
 
-    return () => clearTimeout(timeoutId);
-  }, [saveProcessingStates]);
+  // Debounced video text saving (only save if changed)
+  useEffect(() => {
+    if (localVideoText !== videoText && localVideoText.trim() !== '') {
+      const timeoutId = setTimeout(() => {
+        console.log('💾 Debounced save: Video text updated in session');
+        updateAvatarSession({ videoText: localVideoText });
+      }, 5000); // Increased delay
+
+      return () => clearTimeout(timeoutId);
+    }
+  }, [localVideoText, videoText, updateAvatarSession]);
+
+  // Callback to sync selected avatars to session (debounced)
+  const onSelectedAvatarsChange = useCallback((avatars: (ExistingImage | GeneratedAvatar)[]) => {
+    console.log('💾 Saving selected avatars to session:', avatars.length);
+    updateAvatarSession({ selectedAvatars: avatars });
+  }, [updateAvatarSession]);
+
+  // Session-aware prompt generation functions
+  const handleRatioResolutionChange = useCallback((newAspectRatio: string, newResolution: {width: number, height: number}) => {
+    console.log('🔄 Avatar generation ratio/resolution change:', { newAspectRatio, newResolution });
+    
+    // Find the combined option that matches the new values
+    const newCombinedOption = COMBINED_RATIO_RESOLUTION_OPTIONS.find(
+      option => option.aspectRatio === newAspectRatio && 
+                option.width === newResolution.width && 
+                option.height === newResolution.height
+    ) || COMBINED_RATIO_RESOLUTION_OPTIONS[0];
+
+    updateAvatarSession({
+      aspectRatio: newAspectRatio,
+      resolution: `${newResolution.width}x${newResolution.height}`,
+      selectedCombinedOption: newCombinedOption
+    });
+  }, [updateAvatarSession]);
+
+  const generatePrompt = useCallback(async () => {
+    if (!avatarDescription.trim()) {
+      setError('Please enter an avatar description');
+      return;
+    }
+
+    setIsOptimizing(true);
+    setError(null);
+
+    try {
+      console.log('🤖 Generating prompt for:', avatarDescription);
+      const response = await fetch('/api/optimize-avatar-prompt', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          description: avatarDescription,
+          messages: conversation
+        }),
+      });
+
+      const data = await response.json();
+      console.log('🤖 Prompt generation response:', data);
+
+      if (data.success) {
+        const newPrompt: AvatarPrompt = {
+          id: Date.now(),
+          content: avatarDescription,
+          runwayPrompt: data.optimizedPrompt,
+          chineseTranslation: data.chineseTranslation || '',
+          isEdited: false,
+          generatedImages: [],
+          isGeneratingImages: false,
+          failedCount: 0
+        };
+
+        // Update session with new prompt and conversation
+        const newConversation: ConversationMessage[] = [
+          ...conversation,
+          { role: 'user' as const, content: avatarDescription },
+          { role: 'assistant' as const, content: data.optimizedPrompt }
+        ];
+
+        updateAvatarSession({ 
+          avatarPrompts: [...avatarPrompts, newPrompt],
+          conversation: newConversation
+        });
+
+        console.log('✅ Prompt generated successfully!');
+      } else {
+        console.error('❌ Prompt generation failed:', data.error);
+        setError(data.error || 'Failed to optimize prompt');
+      }
+    } catch (error) {
+      console.error('❌ Error optimizing prompt:', error);
+      setError('Network error occurred');
+    } finally {
+      setIsOptimizing(false);
+    }
+  }, [avatarDescription, conversation, avatarPrompts, updateAvatarSession]);
 
   // Restore processing states when session is loaded (NEW)
   useEffect(() => {
@@ -234,94 +409,7 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
     return () => clearTimeout(timeoutId);
   }, [localVideoText, videoText, updateAvatarSession]);
 
-  // Callback to sync selected avatars to session
-  const onSelectedAvatarsChange = useCallback((avatars: (ExistingImage | GeneratedAvatar)[]) => {
-    console.log('💾 Saving selected avatars to session:', avatars.length);
-    updateAvatarSession({ selectedAvatars: avatars });
-  }, [updateAvatarSession]);
-
   // Session-aware prompt generation functions
-  const handleRatioResolutionChange = useCallback((newAspectRatio: string, newResolution: {width: number, height: number}) => {
-    console.log('🔄 Avatar generation ratio/resolution change:', { newAspectRatio, newResolution });
-    
-    // Update the selected combined option
-    const newOption = COMBINED_RATIO_RESOLUTION_OPTIONS.find(
-      option => option.aspectRatio === newAspectRatio && 
-                option.width === newResolution.width && 
-                option.height === newResolution.height
-    );
-    
-    if (newOption) {
-      updateAvatarSession({ 
-        aspectRatio: newAspectRatio,
-        resolution: `${newResolution.width}x${newResolution.height}`,
-        selectedCombinedOption: newOption
-      });
-    }
-  }, [updateAvatarSession]);
-
-  const generatePrompt = useCallback(async () => {
-    if (!avatarDescription.trim()) {
-      setError('Please enter an avatar description');
-      return;
-    }
-
-    setIsOptimizing(true);
-    setError(null);
-
-    try {
-      console.log('🤖 Generating prompt for:', avatarDescription);
-      const response = await fetch('/api/optimize-avatar-prompt', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          description: avatarDescription,
-          messages: conversation
-        }),
-      });
-
-      const data = await response.json();
-      console.log('🤖 Prompt generation response:', data);
-
-      if (data.success) {
-        const newPrompt: AvatarPrompt = {
-          id: Date.now(),
-          content: avatarDescription,
-          runwayPrompt: data.optimizedPrompt,
-          chineseTranslation: data.chineseTranslation || '',
-          isEdited: false,
-          generatedImages: [],
-          isGeneratingImages: false,
-          failedCount: 0
-        };
-
-        // Update session with new prompt and conversation
-        const newConversation: ConversationMessage[] = [
-          ...conversation,
-          { role: 'user' as const, content: avatarDescription },
-          { role: 'assistant' as const, content: data.optimizedPrompt }
-        ];
-
-        updateAvatarSession({ 
-          avatarPrompts: [...avatarPrompts, newPrompt],
-          conversation: newConversation
-        });
-
-        console.log('✅ Prompt generated successfully!');
-      } else {
-        console.error('❌ Prompt generation failed:', data.error);
-        setError(data.error || 'Failed to optimize prompt');
-      }
-    } catch (error) {
-      console.error('❌ Error optimizing prompt:', error);
-      setError('Network error occurred');
-    } finally {
-      setIsOptimizing(false);
-    }
-  }, [avatarDescription, conversation, avatarPrompts, updateAvatarSession]);
-
   const handlePromptEdit = useCallback((id: number, newRunwayPrompt: string) => {
     const updatedPrompts = avatarPrompts.map(prompt => 
       prompt.id === id 
@@ -344,7 +432,16 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
     updateAvatarSession({ avatarPrompts: updatedPrompts });
 
     try {
-      console.log('🖼️ Generating avatars:', { promptId, imageCount, aspectRatio, resolution });
+      // Convert string resolution to object format that the API expects
+      const resolutionObj = (() => {
+        if (typeof resolution === 'string') {
+          const [width, height] = resolution.split('x').map(Number);
+          return { width, height };
+        }
+        return resolution;
+      })();
+
+      console.log('🖼️ Generating avatars:', { promptId, imageCount, aspectRatio, resolution: resolutionObj });
       
       const response = await fetch('/api/runway-generate', {
         method: 'POST',
@@ -356,7 +453,7 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
           imageCount: imageCount,
           referenceImages: [], // Empty array for text-to-image only
           aspectRatio: aspectRatio,
-          resolution: resolution
+          resolution: resolutionObj
         }),
       });
 
