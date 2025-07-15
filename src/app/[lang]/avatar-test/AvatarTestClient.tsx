@@ -344,16 +344,8 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
     updateAvatarSession({ avatarPrompts: updatedPrompts });
 
     try {
-      // Convert string resolution to object format that the API expects
-      const resolutionObj = (() => {
-        if (typeof resolution === 'string') {
-          const [width, height] = resolution.split('x').map(Number);
-          return { width, height };
-        }
-        return resolution;
-      })();
-
-      console.log('🖼️ Generating avatars:', { promptId, imageCount, aspectRatio, resolution: resolutionObj });
+      console.log('🖼️ Generating avatars:', { promptId, imageCount, aspectRatio, resolution });
+      
       const response = await fetch('/api/runway-generate', {
         method: 'POST',
         headers: {
@@ -362,87 +354,55 @@ export default function AvatarTestClient({ dict, searchParams }: AvatarTestClien
         body: JSON.stringify({
           promptText: prompt.runwayPrompt,
           imageCount: imageCount,
+          referenceImages: [], // Empty array for text-to-image only
           aspectRatio: aspectRatio,
-          resolution: resolutionObj
+          resolution: resolution
         }),
       });
 
       const data = await response.json();
       console.log('🖼️ Runway API Response:', data);
 
-      if (data.success) {
-        if (data.images && data.images.length > 0) {
-          // Generation successful - update prompt with new images
-          const newGeneratedImages: GeneratedAvatar[] = data.images.map((imageData: any, index: number) => ({
-            id: `${imageData.taskId}_${index}`,
-            filename: imageData.filename,
-            url: imageData.url,
-            prompt: imageData.prompt,
-            taskId: imageData.taskId
-          }));
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to generate avatars');
+      }
 
-          console.log('✅ Generated avatars:', newGeneratedImages.length);
-          
-          const finalUpdatedPrompts = avatarPrompts.map(p => 
-            p.id === promptId 
-              ? { 
-                  ...p, 
-                  isGeneratingImages: false, 
-                  generatedImages: [...p.generatedImages, ...newGeneratedImages]
-                }
-              : p
-          );
-          updateAvatarSession({ avatarPrompts: finalUpdatedPrompts });
+      if (data.success && data.images) {
+        // Generation successful - update prompt with new images
+        const newGeneratedImages: GeneratedAvatar[] = data.images.map((imageData: any, index: number) => ({
+          id: `${imageData.taskId}_${index}`,
+          filename: imageData.filename,
+          url: imageData.url,
+          prompt: imageData.prompt,
+          taskId: imageData.taskId
+        }));
 
-          // Show warning if not all images were generated
-          if (data.images.length < imageCount) {
-            setError(`Partially successful: ${data.images.length}/${imageCount} images generated`);
-          }
-        } else {
-          // API succeeded but no images returned (likely timeout)
-          console.log('⚠️ API succeeded but no images returned - likely timeout');
-          const failedPrompts = avatarPrompts.map(p => 
-            p.id === promptId 
-              ? { 
-                  ...p, 
-                  isGeneratingImages: false,
-                  failedCount: p.failedCount + 1
-                }
-              : p
-          );
-          updateAvatarSession({ avatarPrompts: failedPrompts });
-          setError('Generation timed out - no images were completed within the time limit');
-        }
-      } else {
-        // API returned success: false
-        console.log('❌ API returned success: false:', data.error);
-        const failedPrompts = avatarPrompts.map(p => 
+        const finalUpdatedPrompts = avatarPrompts.map(p => 
           p.id === promptId 
             ? { 
                 ...p, 
+                generatedImages: [...(p.generatedImages || []), ...newGeneratedImages],
                 isGeneratingImages: false,
-                failedCount: p.failedCount + 1
+                failedCount: (p.failedCount || 0) + (data.requested - data.totalGenerated || 0)
               }
             : p
         );
-        updateAvatarSession({ avatarPrompts: failedPrompts });
-        setError(data.error || 'Failed to generate avatars');
+        updateAvatarSession({ avatarPrompts: finalUpdatedPrompts });
+      } else {
+        throw new Error(data.error || 'No avatars generated');
       }
     } catch (error) {
-      console.error('❌ Error generating avatars:', error);
-      const failedPrompts = avatarPrompts.map(p => 
+      console.error('Error generating avatars:', error);
+      // Update state to show error
+      const errorUpdatedPrompts = avatarPrompts.map(p => 
         p.id === promptId 
-          ? { 
-              ...p, 
-              isGeneratingImages: false,
-              failedCount: p.failedCount + 1
-            }
+          ? { ...p, isGeneratingImages: false, failedCount: (p.failedCount || 0) + imageCount }
           : p
       );
-      updateAvatarSession({ avatarPrompts: failedPrompts });
-      setError('Network error occurred during generation');
+      updateAvatarSession({ avatarPrompts: errorUpdatedPrompts });
+      alert(`Error generating avatars: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }, [avatarPrompts, aspectRatio, resolution, updateAvatarSession]);
+  }, [avatarPrompts, updateAvatarSession, aspectRatio, resolution]);
 
   const {
     existingImages,
