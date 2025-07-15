@@ -215,7 +215,7 @@ export async function POST(request: NextRequest) {
       const content: ContentItem[] = [
         {
           type: "text",
-          text: `${prompt} --resolution 720p --duration ${duration} --ratio ${aspectRatio} --watermark true --camerafixed false${seed !== -1 ? ` --seed ${seed}` : ''}`
+          text: `${prompt} --resolution 720p --duration ${duration} --ratio ${aspectRatio} --watermark false --camerafixed false${seed !== -1 ? ` --seed ${seed}` : ''}`
         }
       ];
 
@@ -241,7 +241,7 @@ export async function POST(request: NextRequest) {
       }
 
       // Update the text content with the correct ratio
-      (content[0] as ContentTextItem).text = `${prompt} --resolution 720p --duration ${duration} --ratio ${ratioParam} --watermark true --camerafixed false${seed !== -1 ? ` --seed ${seed}` : ''}`;
+      (content[0] as ContentTextItem).text = `${prompt} --resolution 720p --duration ${duration} --ratio ${ratioParam} --watermark false --camerafixed false${seed !== -1 ? ` --seed ${seed}` : ''}`;
 
       // Prepare request data for VolcEngine content generation API
       const requestData = {

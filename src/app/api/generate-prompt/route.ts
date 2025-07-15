@@ -76,9 +76,9 @@ export async function POST(request: NextRequest) {
               },
             ],
             temperature: 0.7,
-            max_tokens: 500, // Restore tokens for better quality
+            max_tokens: 1000, // Restore tokens for better quality
           }, {
-            timeout: 45000, // Increase timeout to 45 seconds
+            timeout: 75000, // Increase timeout to 45 seconds
           });
 
           console.log('✅ OpenAI API call successful');
@@ -173,7 +173,7 @@ export async function POST(request: NextRequest) {
           temperature: 0.7,
           max_tokens: 500, // Restore tokens for better quality
         }, {
-          timeout: 45000, // Increase timeout to 45 seconds
+          timeout: 75000, // Increase timeout to 45 seconds
         });
 
         console.log('✅ OpenAI API call successful');
