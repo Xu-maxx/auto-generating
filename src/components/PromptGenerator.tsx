@@ -111,11 +111,15 @@ export default function PromptGenerator({
           systemContent += ` Additionally, fit the style: ${projectStyle}`;
         }
         
-        // Add reference images context if available
+        // Add reference images context as TEXT ONLY (don't send images to OpenAI)
         if (referenceImages.length > 0) {
-          systemContent += ` Additionally, you have ${referenceImages.length} reference image${referenceImages.length > 1 ? 's' : ''} to guide the style and composition. Consider these reference images when creating the prompt.`;
+          systemContent += ` Additionally, you should consider the following ${referenceImages.length} reference image${referenceImages.length > 1 ? 's' : ''} for style and composition guidance: `;
+          referenceImages.forEach((refImg, index) => {
+            systemContent += `Reference ${index + 1}: ${refImg.filename || 'Style reference image'}. `;
+          });
         }
         
+        // ONLY send the main uploaded image to OpenAI, no reference images
         const userContent: any[] = [
           {
             type: 'image_url',
@@ -124,17 +128,6 @@ export default function PromptGenerator({
             },
           },
         ];
-
-        // Add reference images to the user content
-        referenceImages.forEach((refImg, index) => {
-          const imageUrl = refImg.isVideo && refImg.extractedFrame ? refImg.extractedFrame : refImg.url;
-          userContent.push({
-            type: 'image_url',
-            image_url: {
-              url: imageUrl,
-            },
-          });
-        });
 
         messages = [
           {
@@ -147,61 +140,54 @@ export default function PromptGenerator({
           }
         ];
       } else {
-        // Subsequent conversations - include history with edited content
-        let systemContent = 'you will receive an image, base on that image you need to generate a prompt for image AI generator runway to generate an image just like the image I give you (as similar as possible). You need to output the response in the following structure:\n\n**RUNWAY PROMPT:**\n[The runway prompt in English]\n\n**CHINESE TRANSLATION:**\n[The Chinese translation of the runway prompt]\n\nMake sure to follow this exact format with the headers and structure.';
+        // Subsequent conversations - ONLY text, no images at all
+        let systemContent = 'Based on the previous conversation about generating runway prompts, please create another variation that follows this structure:\n\n**RUNWAY PROMPT:**\n[The runway prompt in English]\n\n**CHINESE TRANSLATION:**\n[The Chinese translation of the runway prompt]\n\nMake sure to follow this exact format with the headers and structure.';
         
         // Add project style context if enabled and available
         if (useProjectStyle && projectStyle) {
           systemContent += ` Additionally, fit the style: ${projectStyle}`;
         }
-        
+
+        // Add reference images context as TEXT ONLY
         if (referenceImages.length > 0) {
-          systemContent += ` Additionally, you have ${referenceImages.length} reference image${referenceImages.length > 1 ? 's' : ''} to guide the style and composition. Consider these reference images when creating the prompt.`;
+          systemContent += ` Additionally, consider the following ${referenceImages.length} reference image${referenceImages.length > 1 ? 's' : ''} for style guidance: `;
+          referenceImages.forEach((refImg, index) => {
+            systemContent += `Reference ${index + 1}: ${refImg.filename || 'Style reference image'}. `;
+          });
         }
 
-        const userContent: any[] = [
-          {
-            type: 'image_url',
-            image_url: {
-              url: imageDataUrl,
-            },
-          },
-        ];
-
-        // Add reference images to the user content
-        referenceImages.forEach((refImg, index) => {
-          const imageUrl = refImg.isVideo && refImg.extractedFrame ? refImg.extractedFrame : refImg.url;
-          userContent.push({
-            type: 'image_url',
-            image_url: {
-              url: imageUrl,
-            },
-          });
-        });
+        // For subsequent requests, only include text-based conversation history
+        const textOnlyConversation = conversation.slice(2).map(msg => ({
+          ...msg,
+          content: typeof msg.content === 'string' 
+            ? (msg.role === 'assistant' && msg.editedContent ? msg.editedContent : msg.content)
+            : 'Previous image-based conversation'
+        }));
 
         messages = [
           {
             role: 'system',
             content: systemContent
           },
-          {
-            role: 'user',
-            content: userContent,
-          },
-          // Add conversation history
-          ...conversation.slice(2).map(msg => ({
-            ...msg,
-            content: msg.role === 'assistant' && msg.editedContent ? msg.editedContent : msg.content
-          })),
+          // Add simplified conversation history (text only)
+          ...textOnlyConversation,
           {
             role: 'user',
             content: userRequirement.trim() 
-              ? `Please provide another runway prompt variation for the same image. ${userRequirement.trim()}. Make sure to follow the exact output format with **RUNWAY PROMPT:** and **CHINESE TRANSLATION:** sections.`
-              : 'Please provide another runway prompt variation for the same image, make it different from the previous ones but still accurate to the image. Make sure to follow the exact output format with **RUNWAY PROMPT:** and **CHINESE TRANSLATION:** sections.'
+              ? `Please provide another runway prompt variation based on the same original image. ${userRequirement.trim()}. Make sure to follow the exact output format with **RUNWAY PROMPT:** and **CHINESE TRANSLATION:** sections.`
+              : 'Please provide another runway prompt variation based on the same original image, make it different from the previous ones but still accurate to the original image. Make sure to follow the exact output format with **RUNWAY PROMPT:** and **CHINESE TRANSLATION:** sections.'
           }
         ];
       }
 
+      console.log('🤖 Generating prompt with', messages.length, 'messages');
+      console.log('🖼️ Images in request:', messages.reduce((count, msg) => {
+        if (Array.isArray(msg.content)) {
+          return count + msg.content.filter(item => item.type === 'image_url').length;
+        }
+        return count;
+      }, 0));
+      
       const response = await fetch('/api/generate-prompt', {
         method: 'POST',
         headers: {
@@ -212,23 +198,56 @@ export default function PromptGenerator({
         }),
       });
 
+      console.log('📡 API call completed, checking response...');
+      console.log('🌐 Response status:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      });
+
       if (!response.ok) {
-        throw new Error('Failed to generate prompt');
+        const errorText = await response.text();
+        console.error('❌ API response not ok:', errorText);
+        throw new Error(`Failed to generate prompt: ${response.status} ${response.statusText}`);
       }
 
       const data = await response.json();
+      console.log('🤖 Prompt generation response:', data);
       
       if (data.error) {
+        console.error('❌ API returned error:', data.error);
         throw new Error(data.error);
       }
 
-      const { runwayPrompt, chineseTranslation } = parsePromptResponse(data.prompt);
+      // Handle both new format (with success) and legacy format (direct prompt)
+      const promptContent = data.prompt || data.fullResponse || '';
+      const runwayPrompt = data.runwayPrompt || '';
+      const chineseTranslation = data.chineseTranslation || '';
+
+      if (!promptContent) {
+        throw new Error('Empty prompt response from API');
+      }
+
+      // If we didn't get parsed data, parse it ourselves
+      let finalRunwayPrompt = runwayPrompt;
+      let finalChineseTranslation = chineseTranslation;
+      
+      if (!finalRunwayPrompt && !finalChineseTranslation) {
+        const parsed = parsePromptResponse(promptContent);
+        finalRunwayPrompt = parsed.runwayPrompt;
+        finalChineseTranslation = parsed.chineseTranslation;
+      }
+
+      console.log('✅ Prompt parsed successfully:', {
+        runwayPromptLength: finalRunwayPrompt.length,
+        chineseTranslationLength: finalChineseTranslation.length
+      });
 
       const newPrompt: PromptWithSpec = {
         id: Date.now(),
-        content: data.prompt,
-        runwayPrompt: runwayPrompt,
-        chineseTranslation: chineseTranslation,
+        content: promptContent,
+        runwayPrompt: finalRunwayPrompt,
+        chineseTranslation: finalChineseTranslation,
         isEdited: false,
         specification: userRequirement.trim() || undefined,
         generatedImages: [],
@@ -245,7 +264,7 @@ export default function PromptGenerator({
         },
         {
           role: 'assistant' as const,
-          content: data.prompt
+          content: promptContent
         }
       ];
 
@@ -257,11 +276,25 @@ export default function PromptGenerator({
       });
 
       if (onPromptGenerated) {
-        onPromptGenerated(data.prompt);
+        onPromptGenerated(promptContent);
       }
+
+      console.log('✅ Prompt generated successfully!');
     } catch (error) {
-      console.error('Error generating prompt:', error);
-      setError(error instanceof Error ? error.message : 'Unknown error occurred');
+      console.error('❌ Error generating prompt:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setError(errorMessage);
+      
+      // More specific error messages
+      if (errorMessage.includes('timeout')) {
+        setError('Request timed out. Please try again.');
+      } else if (errorMessage.includes('rate limit')) {
+        setError('Rate limit exceeded. Please try again later.');
+      } else if (errorMessage.includes('API key')) {
+        setError('API key configuration issue. Please check settings.');
+      } else if (errorMessage.includes('Network')) {
+        setError('Network error. Please check your connection.');
+      }
     } finally {
       setIsGenerating(false);
     }

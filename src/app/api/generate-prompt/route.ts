@@ -3,9 +3,29 @@ import OpenAI from 'openai';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-  timeout: 30000, // 30 second timeout
-  maxRetries: 2, // Retry up to 2 times
+  timeout: 60000, // Increase to 60 seconds
+  maxRetries: 2, // Keep retries reasonable
 });
+
+// Parse the response to extract runway prompt and Chinese translation
+const parsePromptResponse = (response: string) => {
+  const runwayPromptMatch = response.match(/\*\*RUNWAY PROMPT:\*\*\s*([\s\S]*?)(?=\*\*CHINESE TRANSLATION:\*\*|$)/);
+  const chineseTranslationMatch = response.match(/\*\*CHINESE TRANSLATION:\*\*\s*([\s\S]*?)$/);
+  
+  const parsed = {
+    runwayPrompt: runwayPromptMatch ? runwayPromptMatch[1].trim() : response,
+    chineseTranslation: chineseTranslationMatch ? chineseTranslationMatch[1].trim() : ''
+  };
+  
+  console.log('📝 Parsed response:', {
+    runwayPromptLength: parsed.runwayPrompt.length,
+    chineseTranslationLength: parsed.chineseTranslation.length,
+    runwayPromptPreview: parsed.runwayPrompt.substring(0, 100) + '...',
+    chineseTranslationPreview: parsed.chineseTranslation.substring(0, 100) + '...'
+  });
+  
+  return parsed;
+};
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,7 +33,7 @@ export async function POST(request: NextRequest) {
 
     // Validate OpenAI API key
     if (!process.env.OPENAI_API_KEY) {
-      console.error('Missing OPENAI_API_KEY environment variable');
+      console.error('❌ OpenAI API key not configured');
       return NextResponse.json(
         { error: 'OpenAI API key not configured' },
         { status: 500 }
@@ -22,30 +42,90 @@ export async function POST(request: NextRequest) {
 
     // Handle legacy format (single image) for backward compatibility
     if (image && !messages) {
-      const response = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        messages: [
-          {
-            role: 'system',
-            content: 'you will receive an image, base on that image you need to generate a prompt for image AI generator runway to generate an image just like the image I give you (as similar as possible). You need to output the response in the following structure:\n\n**RUNWAY PROMPT:**\n[The runway prompt in English]\n\n**CHINESE TRANSLATION:**\n[The Chinese translation of the runway prompt]\n\nMake sure to follow this exact format with the headers and structure.'
-          },
-          {
-            role: 'user',
-            content: [
+      console.log('🔄 Using legacy format (single image)');
+      
+      // Simplified retry logic with shorter timeouts
+      let response;
+      let retryCount = 0;
+      const maxRetries = 3; // Increase retries
+
+      while (retryCount < maxRetries) {
+        try {
+          console.log(`🔄 OpenAI API call attempt ${retryCount + 1}/${maxRetries}`);
+          
+          // Use gpt-4o for better quality since payload issue is solved
+          const modelToUse = 'gpt-4o';
+          
+          response = await openai.chat.completions.create({
+            model: modelToUse,
+            messages: [
               {
-                type: 'image_url',
-                image_url: {
-                  url: image,
-                },
+                role: 'system',
+                content: 'you will receive an image, base on that image you need to generate a prompt for image AI generator runway to generate an image just like the image I give you (as similar as possible). You need to output the response in the following structure:\n\n**RUNWAY PROMPT:**\n[The runway prompt in English]\n\n**CHINESE TRANSLATION:**\n[The Chinese translation of the runway prompt]\n\nMake sure to follow this exact format with the headers and structure.'
+              },
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'image_url',
+                    image_url: {
+                      url: image,
+                    },
+                  },
+                ],
               },
             ],
-          },
-        ],
-        max_tokens: 500,
-      });
+            temperature: 0.7,
+            max_tokens: 500, // Restore tokens for better quality
+          }, {
+            timeout: 45000, // Increase timeout to 45 seconds
+          });
 
-      const prompt = response.choices[0]?.message?.content || '';
-      return NextResponse.json({ prompt });
+          console.log('✅ OpenAI API call successful');
+          break; // Success, exit retry loop
+          
+        } catch (apiError: any) {
+          retryCount++;
+          console.error(`❌ OpenAI API call failed (attempt ${retryCount}/${maxRetries}):`, {
+            error: apiError.message,
+            code: apiError.code,
+            type: apiError.type,
+            status: apiError.status
+          });
+
+          if (retryCount >= maxRetries) {
+            // If all retries failed, throw the error
+            throw apiError;
+          }
+
+          // Wait before retry (longer wait)
+          const waitTime = 5000; // Increase to 5 seconds
+          console.log(`⏳ Waiting ${waitTime}ms before retry...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+        }
+      }
+
+      if (!response) {
+        throw new Error('Failed to get response from OpenAI after retries');
+      }
+
+      const prompt = response.choices[0]?.message?.content?.trim() || '';
+      
+      if (!prompt) {
+        throw new Error('Empty response from OpenAI');
+      }
+      
+      console.log('🤖 OpenAI raw response:', prompt.substring(0, 200) + '...');
+      
+      // Parse the response
+      const { runwayPrompt, chineseTranslation } = parsePromptResponse(prompt);
+
+      return NextResponse.json({ 
+        success: true,
+        prompt: prompt,
+        runwayPrompt: runwayPrompt,
+        chineseTranslation: chineseTranslation
+      });
     }
 
     // Handle new format (conversation messages)
@@ -65,25 +145,90 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No valid messages provided' }, { status: 400 });
     }
 
-    console.log('Calling OpenAI API with', validMessages.length, 'messages');
+    // Check for payload size issues
+    const messagePayloadSize = JSON.stringify(validMessages).length;
+    console.log('📦 Message payload size:', messagePayloadSize, 'bytes');
+    
+    if (messagePayloadSize > 50000) { // 50KB limit
+      console.warn('⚠️ Large payload detected, may cause timeout');
+    }
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: validMessages,
-      max_tokens: 500,
+    console.log('🔄 Calling OpenAI API with', validMessages.length, 'messages');
+
+    // Give more time with longer timeouts
+    let response;
+    let retryCount = 0;
+    const maxRetries = 3; // Increase retries
+
+    while (retryCount < maxRetries) {
+      try {
+        console.log(`🔄 OpenAI API call attempt ${retryCount + 1}/${maxRetries}`);
+        
+        // Use gpt-4o for better quality since payload issue is solved
+        const modelToUse = 'gpt-4o';
+        
+        response = await openai.chat.completions.create({
+          model: modelToUse,
+          messages: validMessages,
+          temperature: 0.7,
+          max_tokens: 500, // Restore tokens for better quality
+        }, {
+          timeout: 45000, // Increase timeout to 45 seconds
+        });
+
+        console.log('✅ OpenAI API call successful');
+        break; // Success, exit retry loop
+        
+      } catch (apiError: any) {
+        retryCount++;
+        console.error(`❌ OpenAI API call failed (attempt ${retryCount}/${maxRetries}):`, {
+          error: apiError.message,
+          code: apiError.code,
+          type: apiError.type,
+          status: apiError.status
+        });
+
+        if (retryCount >= maxRetries) {
+          // If all retries failed, throw the error
+          throw apiError;
+        }
+
+        // Wait before retry (longer wait)
+        const waitTime = 5000; // Increase to 5 seconds
+        console.log(`⏳ Waiting ${waitTime}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
+    }
+
+    if (!response) {
+      throw new Error('Failed to get response from OpenAI after retries');
+    }
+
+    const prompt = response.choices[0]?.message?.content?.trim() || '';
+
+    if (!prompt) {
+      throw new Error('Empty response from OpenAI');
+    }
+    
+    console.log('🤖 OpenAI raw response:', prompt.substring(0, 200) + '...');
+    
+    // Parse the response
+    const { runwayPrompt, chineseTranslation } = parsePromptResponse(prompt);
+
+    return NextResponse.json({ 
+      success: true,
+      prompt: prompt,
+      runwayPrompt: runwayPrompt,
+      chineseTranslation: chineseTranslation
     });
-
-    const prompt = response.choices[0]?.message?.content || '';
-
-    return NextResponse.json({ prompt });
-  } catch (error) {
-    console.error('Error calling OpenAI API:', error);
+  } catch (error: any) {
+    console.error('❌ Error calling OpenAI API:', error);
     
     // Handle specific OpenAI errors
     if (error instanceof Error) {
       if (error.message.includes('timeout')) {
         return NextResponse.json(
-          { error: 'Request timed out. Please try again.' },
+          { error: 'Request timed out. The image payload may be too large. Try reducing reference images.' },
           { status: 408 }
         );
       } else if (error.message.includes('API key')) {
@@ -96,11 +241,16 @@ export async function POST(request: NextRequest) {
           { error: 'Rate limit exceeded. Please try again later.' },
           { status: 429 }
         );
+      } else if (error.message.includes('content_policy')) {
+        return NextResponse.json(
+          { error: 'Content policy violation. Please try with different images.' },
+          { status: 400 }
+        );
       }
     }
     
     return NextResponse.json(
-      { error: 'Failed to generate prompt' },
+      { error: 'Failed to generate prompt. Please try again or reduce image complexity.' },
       { status: 500 }
     );
   }
